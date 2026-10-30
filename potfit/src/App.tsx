@@ -3,11 +3,13 @@ import { parseSTL, writeBinarySTL } from '../shared/stl.ts';
 import { cloneTransform, transformsEqual } from '../shared/transform.ts';
 import type { CodexEvent, CodexRun, FitMetrics, FitSettings, PotModel, PotTransform, ReferencePot, ServerStatus } from '../shared/types.ts';
 import { api, type ModelPatchBody } from './api.ts';
-import { CodexPanel, type LogEntry } from './components/CodexPanel.tsx';
+import { CodexPanel } from './components/CodexPanel.tsx';
 import { FitPanel } from './components/FitPanel.tsx';
 import { ImportDialog, type PendingImport } from './components/ImportDialog.tsx';
 import { ModelList } from './components/ModelList.tsx';
 import { ReferencePanel } from './components/ReferencePanel.tsx';
+import { ReviewPanel } from './components/ReviewPanel.tsx';
+import type { LogEntry } from './components/RunLog.tsx';
 import { GeometryClient } from './geometry.ts';
 import { importFile, type ImportedPart } from './viewer/importers.ts';
 import { PotViewer, type GizmoMode, type ScaleLock } from './viewer/PotViewer.ts';
@@ -43,6 +45,8 @@ export function App() {
   const [runs, setRuns] = useState<CodexRun[]>([]);
   const [activeRun, setActiveRun] = useState<CodexRun | null>(null);
   const [logs, setLogs] = useState<Record<string, LogEntry[]>>({});
+  const [instructionsDraft, setInstructionsDraft] = useState('');
+  const [feedbackDraft, setFeedbackDraft] = useState('');
   const [pendingImport, setPendingImport] = useState<PendingImport | null>(null);
   const [gizmo, setGizmo] = useState<GizmoMode>('translate');
   const [scaleLock, setScaleLock] = useState<ScaleLock>('uniform');
@@ -65,7 +69,13 @@ export function App() {
   const unsubscribe = useRef<(() => void) | null>(null);
 
   const reference = references.find((r) => r.id === model?.fit.referenceId) ?? null;
-  const locked = !!activeRun;
+  // One Codex run per model at a time. Reviews work on a copy of the fit, so
+  // only fitting runs pause manual edits.
+  const fitRuns = runs.filter((r) => r.kind !== 'review');
+  const reviewRuns = runs.filter((r) => r.kind === 'review');
+  const fitActive = activeRun && activeRun.kind !== 'review' ? activeRun : null;
+  const reviewActive = activeRun && activeRun.kind === 'review' ? activeRun : null;
+  const locked = !!fitActive;
 
   const fail = (e: unknown) => setError((e as Error).message ?? String(e));
 
@@ -220,6 +230,8 @@ export function App() {
     setMetrics(null);
     setRuns([]);
     setActiveRun(null);
+    setInstructionsDraft('');
+    setFeedbackDraft('');
     history.current = { past: [], future: [] };
     bumpHistory();
     viewer.current?.setMesh(null);
@@ -390,7 +402,7 @@ export function App() {
     }
   };
 
-  const startCodex = async (mode: 'fit' | 'feedback', message: string) => {
+  const startCodex = async (mode: CodexRun['kind'], message: string) => {
     if (!model || !viewer.current) return;
     await flushSave();
     const shots = viewer.current.capture();
@@ -556,9 +568,14 @@ export function App() {
               status={status}
               model={model}
               hasReference={!!reference}
-              activeRun={activeRun}
-              runs={runs}
+              activeRun={fitActive}
+              reviewRunning={!!reviewActive}
+              runs={fitRuns}
               logs={logs}
+              instructions={instructionsDraft}
+              feedback={feedbackDraft}
+              onInstructions={setInstructionsDraft}
+              onFeedback={setFeedbackDraft}
               onStart={startCodex}
               onCancel={() => model && api.cancelRun(model.id).catch(fail)}
               onRate={rateRun}
@@ -577,6 +594,25 @@ export function App() {
                 } catch (e) {
                   fail(e);
                 }
+              }}
+            />
+            <ReviewPanel
+              status={status}
+              model={model}
+              hasReference={!!reference}
+              activeRun={reviewActive}
+              fitRunning={!!fitActive}
+              reviews={reviewRuns}
+              logs={logs}
+              onStart={() => startCodex('review', '')}
+              onCancel={() => api.cancelRun(model.id).catch(fail)}
+              onLoadLog={loadLog}
+              onUseFeedback={(text) => {
+                // Feedback continues the fitting conversation; without one, it
+                // becomes the instructions for a new fit.
+                if (model.codexThreadId) setFeedbackDraft(text);
+                else setInstructionsDraft(text);
+                document.querySelector('.panel.codex')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
               }}
             />
           </>

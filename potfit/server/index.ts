@@ -166,7 +166,9 @@ app.patch('/api/models/:id', route(async (req, res) => {
   if ('transform' in b) {
     const err = validateTransform(b.transform);
     if (err) throw new BadRequest(err);
-    if (codex.activeRun(id)) throw new Conflict('Codex is working on this model; wait for it to finish or cancel it');
+    // A review works on its own copy of the fit, so editing during one is fine.
+    const active = codex.activeRun(id);
+    if (active && active.kind !== 'review') throw new Conflict('Codex is working on this model; wait for it to finish or cancel it');
     patch.transform = b.transform as ModelPatch['transform'];
   }
   if ('fit' in b) patch.fit = fitPatch(b.fit) as FitSettings;
@@ -211,7 +213,7 @@ app.get('/api/models/:id/runs', route(async (req, res) => {
 
 app.post('/api/models/:id/runs', route(async (req, res) => {
   const b = (req.body ?? {}) as Record<string, unknown>;
-  const mode = b.mode === 'feedback' ? 'feedback' : 'fit';
+  const mode = b.mode === 'feedback' || b.mode === 'review' ? b.mode : 'fit';
   const images = Array.isArray(b.images) ? b.images : [];
   const decoded = images.slice(0, 4).map((img: { name?: unknown; dataUrl?: unknown }) => {
     const m = typeof img.dataUrl === 'string' ? /^data:image\/png;base64,(.+)$/.exec(img.dataUrl) : null;

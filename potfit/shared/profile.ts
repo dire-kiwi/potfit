@@ -205,25 +205,59 @@ export function descentSeat(p: Profile, f: Frustum, radialClear: number, sr = 1,
   return { seat, stoppedAt };
 }
 
-/** Segments (x1, z1, x2, z2 per segment) of the section at height h. */
-export function sliceSegments(pos: Float32Array, h: number): Float64Array {
-  const out: number[] = [];
+/**
+ * Sections at several heights in one pass over the mesh: for each height, the
+ * segments (x1, z1, x2, z2 per segment) where the mesh crosses it.
+ */
+export function sliceSegmentsAt(pos: Float32Array, heights: number[]): Float64Array[] {
+  const out: number[][] = heights.map(() => []);
   for (let t = 0; t + 8 < pos.length; t += 9) {
-    const ys = [pos[t + 1], pos[t + 4], pos[t + 7]];
-    const below = ys.map((y) => y < h);
-    let lone = -1;
-    if (below[0] !== below[1] && below[0] !== below[2]) lone = 0;
-    else if (below[1] !== below[0] && below[1] !== below[2]) lone = 1;
-    else if (below[2] !== below[0] && below[2] !== below[1]) lone = 2;
-    if (lone < 0) continue;
-    const others = [0, 1, 2].filter((k) => k !== lone);
-    for (const k of others) {
-      const [lo, hi] = below[lone] ? [t + lone * 3, t + k * 3] : [t + k * 3, t + lone * 3];
-      const s = (h - pos[lo + 1]) / (pos[hi + 1] - pos[lo + 1]);
-      out.push(pos[lo] + (pos[hi] - pos[lo]) * s, pos[lo + 2] + (pos[hi + 2] - pos[lo + 2]) * s);
+    const ay = pos[t + 1], by = pos[t + 4], cy = pos[t + 7];
+    const ymin = Math.min(ay, by, cy), ymax = Math.max(ay, by, cy);
+    for (let j = 0; j < heights.length; j++) {
+      const h = heights[j];
+      if (h <= ymin || h > ymax) continue;
+      const aB = ay < h, bB = by < h, cB = cy < h;
+      let lone: number;
+      if (aB !== bB && aB !== cB) lone = 0;
+      else if (bB !== aB && bB !== cB) lone = 1;
+      else if (cB !== aB && cB !== bB) lone = 2;
+      else continue;
+      const loneBelow = lone === 0 ? aB : lone === 1 ? bB : cB;
+      for (let k = 0; k < 3; k++) {
+        if (k === lone) continue;
+        // Interpolate from the lower vertex so shared edges give identical points.
+        const lo = t + (loneBelow ? lone : k) * 3, hi = t + (loneBelow ? k : lone) * 3;
+        const f = (h - pos[lo + 1]) / (pos[hi + 1] - pos[lo + 1]);
+        out[j].push(pos[lo] + (pos[hi] - pos[lo]) * f, pos[lo + 2] + (pos[hi + 2] - pos[lo + 2]) * f);
+      }
     }
   }
-  return Float64Array.from(out);
+  return out.map((a) => Float64Array.from(a));
+}
+
+/** Segments (x1, z1, x2, z2 per segment) of the section at height h. */
+export function sliceSegments(pos: Float32Array, h: number): Float64Array {
+  return sliceSegmentsAt(pos, [h])[0];
+}
+
+/**
+ * Distances along a ray from (ox, oz) in direction (ux, uz) to every segment
+ * it crosses, sorted, with hits at shared segment ends counted once.
+ */
+export function rayIntersections(segs: Float64Array, ox: number, oz: number, ux: number, uz: number): number[] {
+  const ts: number[] = [];
+  for (let s = 0; s < segs.length; s += 4) {
+    const ax = segs[s] - ox, az = segs[s + 1] - oz;
+    const ex = segs[s + 2] - segs[s], ez = segs[s + 3] - segs[s + 1];
+    const den = ux * ez - uz * ex;
+    if (Math.abs(den) < 1e-12) continue;
+    const t = (ax * ez - az * ex) / den;
+    const v = (ax * uz - az * ux) / den;
+    if (t > 1e-9 && v >= 0 && v <= 1) ts.push(t);
+  }
+  ts.sort((a, b) => a - b);
+  return ts.filter((t, i) => i === 0 || t - ts[i - 1] > 1e-6);
 }
 
 /** Distance along a ray from (ox, oz) in direction (ux, uz) to the nearest segment, or Infinity. */
@@ -271,8 +305,7 @@ function fitCircleCenter(px: number[], pz: number[]): { x: number; z: number } |
 export function estimateCenter(pos: Float32Array, heights: number[], start = { x: 0, z: 0 }, rays = 72): { x: number; z: number } | null {
   const xs: number[] = [];
   const zs: number[] = [];
-  for (const h of heights) {
-    const segs = sliceSegments(pos, h);
+  for (const segs of sliceSegmentsAt(pos, heights)) {
     if (segs.length === 0) continue;
     let c: { x: number; z: number } | null = { ...start };
     for (let iter = 0; iter < 3 && c; iter++) {

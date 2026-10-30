@@ -1,17 +1,18 @@
-// Runs `codex exec` to fit a model, streams its events, and applies the result.
+// Runs `codex exec` to fit a model or review a fit, streams its events, and
+// applies (fit) or records (review) the result.
 
 import { spawn, execFile, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { chmod, copyFile, link, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, link, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { checkFit } from '../shared/fit.ts';
-import { parseSTL } from '../shared/stl.ts';
-import { validateTransform } from '../shared/transform.ts';
-import type { CodexEvent, CodexItem, CodexResult, CodexRun, FitGoals, PotModel, ReferencePot } from '../shared/types.ts';
-import { agentsMd, feedbackPrompt, fitPrompt, OUTPUT_SCHEMA } from './prompt.ts';
+import { parseSTL, writeBinarySTL } from '../shared/stl.ts';
+import { applyTransform, computeBounds, orientedBounds, validateTransform } from '../shared/transform.ts';
+import type { CodexEvent, CodexItem, CodexResult, CodexRun, FitGoals, PotModel, ReferencePot, ReviewResult } from '../shared/types.ts';
+import { agentsMd, feedbackPrompt, fitPrompt, OUTPUT_SCHEMA, REVIEW_SCHEMA, reviewAgentsMd, reviewPrompt } from './prompt.ts';
 import type { Store } from './store.ts';
 
 export class Conflict extends Error {}
@@ -33,7 +34,7 @@ interface ActiveRun {
 }
 
 export interface StartInput {
-  mode: 'fit' | 'feedback';
+  mode: 'fit' | 'feedback' | 'review';
   message: string;
   images: { name: string; data: Buffer }[];
 }
@@ -88,15 +89,7 @@ function parseGoals(v: unknown): FitGoals | null {
 }
 
 export function parseResult(text: string): CodexResult {
-  let obj: unknown;
-  try {
-    obj = JSON.parse(text);
-  } catch {
-    const m = /\{[\s\S]*\}/.exec(text);
-    if (!m) throw new Error('Codex did not return a JSON result');
-    obj = JSON.parse(m[0]);
-  }
-  const o = obj as Record<string, unknown>;
+  const o = parseJson(text);
   const err = validateTransform(o.transform);
   if (err) throw new Error(`Codex returned an invalid transform: ${err}`);
   return {
@@ -105,6 +98,34 @@ export function parseResult(text: string): CodexResult {
     summary: typeof o.summary === 'string' ? o.summary : '',
     warnings: Array.isArray(o.warnings) ? o.warnings.map(String) : [],
     confidence: o.confidence === 'high' || o.confidence === 'low' ? o.confidence : 'medium',
+  };
+}
+
+function parseJson(text: string): Record<string, unknown> {
+  try {
+    return JSON.parse(text);
+  } catch {
+    const m = /\{[\s\S]*\}/.exec(text);
+    if (!m) throw new Error('Codex did not return a JSON result');
+    return JSON.parse(m[0]);
+  }
+}
+
+export function parseReview(text: string): ReviewResult {
+  const o = parseJson(text);
+  if (o.verdict !== 'pass' && o.verdict !== 'concerns' && o.verdict !== 'fail') throw new Error('Codex returned a review without a verdict');
+  const findings = Array.isArray(o.findings) ? o.findings : [];
+  return {
+    verdict: o.verdict,
+    summary: typeof o.summary === 'string' ? o.summary : '',
+    findings: findings
+      .filter((f): f is Record<string, unknown> => !!f && typeof f === 'object')
+      .map((f) => ({
+        severity: f.severity === 'major' || f.severity === 'minor' ? f.severity : 'info',
+        title: String(f.title ?? ''),
+        detail: String(f.detail ?? ''),
+      })),
+    feedbackForFitter: typeof o.feedbackForFitter === 'string' ? o.feedbackForFitter : '',
   };
 }
 
@@ -171,7 +192,7 @@ export class CodexRunner {
     if (this.active.has(modelId)) throw new Conflict('Codex is already working on this model');
     const model = await this.store.getModel(modelId);
     const ref = model.fit.referenceId ? await this.store.getReference(model.fit.referenceId) : null;
-    if (!ref) throw new BadRequest('Choose a reference pot before asking Codex to fit the model');
+    if (!ref) throw new BadRequest(`Choose a reference pot before asking Codex to ${input.mode === 'review' ? 'review' : 'fit'} the model`);
     if (input.mode === 'feedback' && !model.codexThreadId) throw new BadRequest('There is no Codex conversation to give feedback on yet; run a fit first');
     if (input.mode === 'feedback' && !input.message.trim()) throw new BadRequest('Feedback is empty');
 
@@ -188,6 +209,7 @@ export class CodexRunner {
       fitBefore: model.fit,
       referenceId: ref.id,
       result: null,
+      review: null,
       metrics: null,
       error: null,
       rating: null,
@@ -231,6 +253,40 @@ export class CodexRunner {
     return ws;
   }
 
+  /**
+   * A fresh directory per review holding only the result: the model already
+   * placed in the pot frame, the reference pot and the goals. Nothing from the
+   * fitting conversation or its workspace.
+   */
+  private async prepareReviewWorkspace(model: PotModel, ref: ReferencePot, runDir: string) {
+    const ws = join(runDir, 'workspace');
+    await mkdir(ws, { recursive: true });
+    const raw = parseSTL(await readFile(this.store.meshFile(model.id)));
+    const rawBounds = computeBounds(raw);
+    const fitted = applyTransform(raw, model.transform, rawBounds);
+    await writeFile(join(ws, 'fitted.stl'), writeBinarySTL(fitted, `potfit fitted: ${model.name}`));
+    const tool = join(ws, 'pot-tool');
+    await writeFile(tool, `#!/bin/sh\nexec "${process.execPath}" "${this.opts.toolPath}" "$@"\n`);
+    await chmod(tool, 0o755);
+    await writeFile(join(ws, 'AGENTS.md'), reviewAgentsMd());
+    const size = (b: { min: { x: number; y: number; z: number }; max: { x: number; y: number; z: number } }) => ({
+      x: b.max.x - b.min.x,
+      y: b.max.y - b.min.y,
+      z: b.max.z - b.min.z,
+    });
+    const design = { scale: model.transform.scale, originalSize: size(orientedBounds(rawBounds, model.transform.up)), fittedSize: size(computeBounds(fitted)) };
+    const { referenceId: _ref, ...goals } = model.fit;
+    const state = {
+      mesh: 'fitted.stl',
+      placed: true,
+      reference: { name: ref.name, topOD: ref.topOD, bottomOD: ref.bottomOD, height: ref.height, notes: ref.notes },
+      fit: goals,
+      design,
+    };
+    await writeFile(join(ws, 'state.json'), JSON.stringify(state, null, 2) + '\n');
+    return { ws, design };
+  }
+
   private async launch(a: ActiveRun, model: PotModel, ref: ReferencePot, input: StartInput) {
     const { run } = a;
     const runDir = this.store.runDir(model.id, run.id);
@@ -241,13 +297,21 @@ export class CodexRunner {
       await writeFile(p, img.data);
       imagePaths.push(p);
     }
-    const ws = await this.prepareWorkspace(model, ref);
-    const schemaPath = join(runDir, 'output-schema.json');
-    await writeFile(schemaPath, JSON.stringify(OUTPUT_SCHEMA, null, 2));
-    const lastPath = join(runDir, 'last-message.json');
-
+    const review = input.mode === 'review';
     const imageNames = input.images.map((i) => i.name);
-    const prompt = input.mode === 'fit' ? fitPrompt(model, ref, input.message, imageNames) : feedbackPrompt(model, ref, input.message, imageNames);
+    let ws: string;
+    let prompt: string;
+    if (review) {
+      const prepared = await this.prepareReviewWorkspace(model, ref, runDir);
+      ws = prepared.ws;
+      prompt = reviewPrompt(ref, model.fit, prepared.design, imageNames);
+    } else {
+      ws = await this.prepareWorkspace(model, ref);
+      prompt = input.mode === 'fit' ? fitPrompt(model, ref, input.message, imageNames) : feedbackPrompt(model, ref, input.message, imageNames);
+    }
+    const schemaPath = join(runDir, 'output-schema.json');
+    await writeFile(schemaPath, JSON.stringify(review ? REVIEW_SCHEMA : OUTPUT_SCHEMA, null, 2));
+    const lastPath = join(runDir, 'last-message.json');
     await writeFile(join(runDir, 'prompt.md'), prompt);
 
     const common = [
@@ -259,10 +323,18 @@ export class CodexRunner {
       ...(this.opts.model ? ['-m', this.opts.model] : []),
       ...imagePaths.flatMap((p) => ['-i', p]),
     ];
-    const args = input.mode === 'feedback' && run.threadId ? ['exec', 'resume', run.threadId, ...common, '--', prompt] : ['exec', ...common, '--', prompt];
+    // Reviews are one-off sessions that are never resumed, so don't keep them.
+    const args =
+      input.mode === 'feedback' && run.threadId
+        ? ['exec', 'resume', run.threadId, ...common, '--', prompt]
+        : ['exec', ...(review ? ['--ephemeral'] : []), ...common, '--', prompt];
 
     this.emit(a, { type: 'status', status: 'running' });
-    this.emit(a, { type: 'log', level: 'info', text: input.mode === 'fit' ? 'Starting a new Codex session' : `Resuming Codex session ${run.threadId}` });
+    this.emit(a, {
+      type: 'log',
+      level: 'info',
+      text: review ? 'Starting an independent review session' : input.mode === 'fit' ? 'Starting a new Codex session' : `Resuming Codex session ${run.threadId}`,
+    });
 
     const child = spawn(this.opts.bin, args, { cwd: ws, stdio: ['ignore', 'pipe', 'pipe'], env: process.env });
     a.child = child;
@@ -281,7 +353,8 @@ export class CodexRunner {
         case 'thread.started':
           run.threadId = String(ev.thread_id);
           this.emit(a, { type: 'thread', threadId: run.threadId });
-          void this.store.updateModel(model.id, { codexThreadId: run.threadId }).catch(() => undefined);
+          // Only the fitting conversation is continued with feedback.
+          if (!review) void this.store.updateModel(model.id, { codexThreadId: run.threadId }).catch(() => undefined);
           break;
         case 'item.started':
         case 'item.updated':
@@ -310,6 +383,8 @@ export class CodexRunner {
     });
     child.on('close', (code, signal) => {
       void writeFile(join(runDir, 'stderr.log'), stderr.join('\n')).catch(() => undefined);
+      // The fitted mesh can be rebuilt from the reviewed transform; don't keep a copy per review.
+      if (review) void rm(join(ws, 'fitted.stl'), { force: true }).catch(() => undefined);
       void this.complete(a, code, signal, lastPath, turnError, stderr);
     });
   }
@@ -321,6 +396,15 @@ export class CodexRunner {
       return this.finish(a, { status: 'error', error: turnError ?? `Codex exited with ${signal ?? `code ${code}`}${tail ? `:\n${tail}` : ''}` });
     }
     try {
+      if (a.run.kind === 'review') {
+        const review = parseReview(await readFile(lastPath, 'utf8'));
+        const model = await this.store.getModel(a.run.modelId);
+        const ref = a.run.referenceId ? await this.store.getReference(a.run.referenceId) : null;
+        const positions = parseSTL(await readFile(this.store.meshFile(model.id)));
+        // Measure what was reviewed, not whatever the user has done since.
+        const metrics = ref ? checkFit(positions, a.run.transformBefore, ref, a.run.fitBefore) : null;
+        return this.finish(a, { status: 'done', error: null, review, metrics });
+      }
       const result = parseResult(await readFile(lastPath, 'utf8'));
       const model = await this.store.getModel(a.run.modelId);
       const ref = model.fit.referenceId ? await this.store.getReference(model.fit.referenceId) : null;

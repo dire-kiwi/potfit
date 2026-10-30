@@ -727,3 +727,55 @@ details > summary {
     grid-template-rows: 1fr 1fr;
   }
 }
+
+/* review */
+
+.verdict {
+  font-weight: 700;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 1px 8px;
+  border-radius: 10px;
+  border: 1px solid currentColor;
+}
+
+.findings {
+  list-style: none;
+  padding: 0;
+  margin: 6px 0;
+}
+
+.findings li {
+  margin: 6px 0;
+  line-height: 1.4;
+}
+
+.severity {
+  font-size: 10px;
+  text-transform: uppercase;
+  padding: 0 5px;
+  border-radius: 6px;
+  border: 1px solid currentColor;
+  vertical-align: 1px;
+}
+
+.severity.major {
+  color: var(--bad);
+}
+
+.severity.minor {
+  color: var(--warn);
+}
+
+.severity.info {
+  color: var(--muted);
+}
+
+.suggestion {
+  margin-top: 8px;
+}
+
+.review-card > .row:first-child {
+  margin-bottom: 6px;
+}

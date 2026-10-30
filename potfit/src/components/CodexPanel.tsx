@@ -1,15 +1,23 @@
-import { useEffect, useRef, useState } from 'react';
-import type { CodexItem, CodexRun, FitGoals, PotModel, ServerStatus } from '../../shared/types.ts';
-
-export type LogEntry = { kind: 'item'; item: CodexItem } | { kind: 'log'; level: 'info' | 'error'; text: string };
+import { useState } from 'react';
+import type { CodexRun, FitGoals, PotModel, ServerStatus } from '../../shared/types.ts';
+import { Elapsed, LogView, type LogEntry } from './RunLog.tsx';
 
 interface Props {
   status: ServerStatus | null;
   model: PotModel;
   hasReference: boolean;
+  /** The fit or feedback run in progress, if any. */
   activeRun: CodexRun | null;
+  /** A review is running; fitting has to wait for it. */
+  reviewRunning: boolean;
+  /** Fit and feedback runs, oldest first. */
   runs: CodexRun[];
   logs: Record<string, LogEntry[]>;
+  /** Drafts live in the app so a review can hand its suggestion over. */
+  instructions: string;
+  feedback: string;
+  onInstructions(text: string): void;
+  onFeedback(text: string): void;
   onStart(mode: 'fit' | 'feedback', message: string): Promise<void>;
   onCancel(): void;
   onRate(run: CodexRun, rating: CodexRun['rating']): void;
@@ -26,72 +34,6 @@ const QUICK_FEEDBACK = [
   'Keep the original proportions.',
   'The pot is upside down or on its side.',
 ];
-
-function Elapsed({ since }: { since: string }) {
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, []);
-  const s = Math.max(0, Math.round((now - Date.parse(since)) / 1000));
-  return <span className="muted">{Math.floor(s / 60)}:{String(s % 60).padStart(2, '0')}</span>;
-}
-
-function LogView({ entries, live }: { entries: LogEntry[]; live: boolean }) {
-  const end = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (live) end.current?.scrollIntoView({ block: 'nearest' });
-  }, [entries.length, live]);
-  if (entries.length === 0) return <p className="hint">{live ? 'Waiting for Codex…' : 'No log recorded.'}</p>;
-  return (
-    <div className="log">
-      {entries.map((e, i) => {
-        if (e.kind === 'log') {
-          return (
-            <div key={i} className={`log-line ${e.level}`}>
-              {e.text}
-            </div>
-          );
-        }
-        const it = e.item;
-        switch (it.type) {
-          case 'agent_message':
-            // The final message is the JSON result, shown in the result card instead.
-            if (it.text?.trim().startsWith('{')) return null;
-            return (
-              <div key={it.id} className="log-msg">
-                {it.text}
-              </div>
-            );
-          case 'reasoning':
-            return (
-              <div key={it.id} className="log-reasoning">
-                {it.text}
-              </div>
-            );
-          case 'command_execution':
-            return (
-              <details key={it.id} className={`log-cmd ${it.status}`}>
-                <summary>
-                  <code>$ {it.command}</code>
-                  {it.status === 'in_progress' ? <span className="spinner" /> : it.exitCode ? <span className="badge bad">exit {it.exitCode}</span> : null}
-                </summary>
-                {it.output && <pre>{it.output}</pre>}
-              </details>
-            );
-          default:
-            return (
-              <details key={it.id} className="log-other">
-                <summary>{it.type}</summary>
-                <pre>{typeof it.detail === 'string' ? it.detail : JSON.stringify(it.detail ?? it.text, null, 2)}</pre>
-              </details>
-            );
-        }
-      })}
-      <div ref={end} />
-    </div>
-  );
-}
 
 const GOAL_LABELS: Record<keyof FitGoals, string> = { clearance: 'clearance', scaleMode: 'scaling', topOffset: 'rim proud by', floorGap: 'floor gap' };
 const goal = (k: keyof FitGoals, v: FitGoals[keyof FitGoals]) =>
@@ -145,9 +87,9 @@ function ResultCard({ run, onRate, onRevert }: { run: CodexRun; onRate: Props['o
 }
 
 export function CodexPanel(props: Props) {
-  const { status, model, activeRun, runs, logs } = props;
-  const [instructions, setInstructions] = useState('');
-  const [feedback, setFeedback] = useState('');
+  const { status, model, activeRun, runs, logs, instructions, feedback } = props;
+  const setInstructions = props.onInstructions;
+  const setFeedback = props.onFeedback;
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [openRun, setOpenRun] = useState<string | null>(null);
@@ -155,6 +97,7 @@ export function CodexPanel(props: Props) {
   const available = status?.codex.available ?? false;
   const latest = runs.at(-1) ?? null;
   const canFeedback = !!model.codexThreadId && !activeRun;
+  const blocked = sending || !available || props.reviewRunning;
   const history = runs.slice(0, -1).reverse();
 
   const start = async (mode: 'fit' | 'feedback', message: string) => {
@@ -217,7 +160,7 @@ export function CodexPanel(props: Props) {
               <h3>Feedback</h3>
               <div className="chips">
                 {QUICK_FEEDBACK.map((q) => (
-                  <button key={q} className="chip-button" onClick={() => setFeedback((f) => (f ? `${f} ${q}` : q))}>
+                  <button key={q} className="chip-button" onClick={() => setFeedback(feedback ? `${feedback} ${q}` : q)}>
                     {q}
                   </button>
                 ))}
@@ -228,11 +171,11 @@ export function CodexPanel(props: Props) {
                 placeholder="Tell Codex what to change. Your manual moves are sent along with this."
                 onChange={(e) => setFeedback(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && feedback.trim()) start('feedback', feedback);
+                  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && feedback.trim() && !blocked) start('feedback', feedback);
                 }}
               />
               <div className="row">
-                <button className="primary" disabled={!feedback.trim() || sending || !available} onClick={() => start('feedback', feedback)}>
+                <button className="primary" disabled={!feedback.trim() || blocked} onClick={() => start('feedback', feedback)}>
                   Send feedback
                 </button>
               </div>
@@ -250,7 +193,7 @@ export function CodexPanel(props: Props) {
             <div className="row">
               <button
                 className={model.codexThreadId ? '' : 'primary'}
-                disabled={sending || !available || !props.hasReference}
+                disabled={blocked || !props.hasReference}
                 onClick={() => start('fit', instructions)}
                 title={props.hasReference ? 'Start a new Codex session for this model' : 'Choose a reference pot first'}
               >
@@ -265,6 +208,7 @@ export function CodexPanel(props: Props) {
           </div>
         </>
       )}
+      {props.reviewRunning && !activeRun && <p className="hint">A review is running; fitting can start when it finishes.</p>}
       {error && <p className="error">{error}</p>}
 
       {history.length > 0 && (

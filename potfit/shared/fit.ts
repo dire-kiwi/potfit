@@ -6,7 +6,10 @@ import {
   findFloor,
   gridFor,
   maxCavity,
+  rayIntersections,
   sliceProfile,
+  sliceSegmentsAt,
+  type Floor,
   type Frustum,
   type Profile,
 } from './profile.ts';
@@ -188,6 +191,41 @@ export function initialTransform(positions: Float32Array, a: MeshAnalysis): PotT
 
 // ---------------------------------------------------------------- checking
 
+/**
+ * Side wall thickness: from the cavity axis, cast rays outwards at several
+ * heights between the floor and the rim; the first crossing is the inside of
+ * the wall and the second its outside. Measured horizontally, so a tapered
+ * wall reads slightly thicker than its true (normal) thickness.
+ */
+function wallThickness(world: Float32Array, axis: { x: number; z: number }, lo: number, hi: number): FitMetrics['wallThickness'] {
+  if (!(hi > lo)) return null;
+  const heights: number[] = [];
+  for (let k = 0; k < 12; k++) heights.push(lo + ((hi - lo) * (k + 0.5)) / 12);
+  const samples: { t: number; y: number }[] = [];
+  const rays = 36;
+  sliceSegmentsAt(world, heights).forEach((segs, j) => {
+    for (let k = 0; k < rays; k++) {
+      const a = (k / rays) * Math.PI * 2;
+      const hits = rayIntersections(segs, axis.x, axis.z, Math.cos(a), Math.sin(a));
+      if (hits.length >= 2) samples.push({ t: hits[1] - hits[0], y: heights[j] });
+    }
+  });
+  if (samples.length === 0) return null;
+  samples.sort((a, b) => a.t - b.t);
+  return { min: samples[0].t, at: samples[0].y, median: samples[samples.length >> 1].t };
+}
+
+/** Thickness of the floor slab: the run of floor slices under the cavity, at the axis. */
+function floorThickness(p: Profile, floor: Floor | null): number | null {
+  if (!floor) return null;
+  const threshold = maxCavity(p) * 0.3;
+  let i = floor.index;
+  while (i > 0 && Number.isFinite(p.cavity[i - 1]) && p.cavity[i - 1] < threshold) i--;
+  // The bottom slice sits half a step above the pot's underside.
+  const bottom = i === 0 ? p.heights[0] - p.step / 2 : p.heights[i] - p.step / 2;
+  return floor.top - bottom;
+}
+
 export function checkFit(positions: Float32Array, t: PotTransform, ref: ReferenceDims, fit: FitSettings, raw?: Bounds): FitMetrics {
   const f = frustumOf(ref);
   const cr = fit.clearance / 2;
@@ -230,6 +268,12 @@ export function checkFit(positions: Float32Array, t: PotTransform, ref: Referenc
   const lo = Math.max(0, floorTop ?? b.min.y), hi = Math.min(f.h, b.max.y);
   if (hi > lo) cavityCenterOffset = estimateCenter(world, cavityHeights(lo, hi, 3));
 
+  // Wall from just above the floor (clear of any fillet) to just under the rim.
+  const wallLo = floorTop ?? b.min.y;
+  const depth = b.max.y - wallLo;
+  const walls = wallThickness(world, cavityCenterOffset ?? { x: 0, z: 0 }, wallLo + Math.min(2, depth * 0.1), b.max.y - Math.min(0.5, depth * 0.02));
+  const floorThick = floorThickness(profile, floor);
+
   const rows: ProfileRow[] = [];
   const rowCount = 24;
   for (let k = 0; k <= rowCount; k++) {
@@ -252,6 +296,8 @@ export function checkFit(positions: Float32Array, t: PotTransform, ref: Referenc
   if (cavityCenterOffset && Math.hypot(cavityCenterOffset.x, cavityCenterOffset.z) > 0.5) {
     warnings.push(`Cavity axis is ${Math.hypot(cavityCenterOffset.x, cavityCenterOffset.z).toFixed(2)} mm off the reference axis.`);
   }
+  if (walls && walls.min < 0.8) warnings.push(`The thinnest wall is ${walls.min.toFixed(2)} mm (at y=${walls.at.toFixed(1)}), which may not print well.`);
+  if (floorThick !== null && floorThick < 0.8) warnings.push(`The floor is only ${floorThick.toFixed(2)} mm thick.`);
   const s = t.scale;
   if (Math.abs(s.x - s.z) > 1e-3 * Math.max(s.x, s.z)) warnings.push(`Width scales differ (x ${s.x.toFixed(4)}, z ${s.z.toFixed(4)}), so the pot is no longer round.`);
   if (Math.min(s.x, s.y, s.z) < 0.2 || Math.max(s.x, s.y, s.z) > 5) warnings.push('Scale is far from 1; check the model units.');
@@ -273,6 +319,8 @@ export function checkFit(positions: Float32Array, t: PotTransform, ref: Referenc
     dropToContact,
     enclosedFraction,
     cavityCenterOffset,
+    wallThickness: walls,
+    floorThickness: floorThick,
     profile: rows,
     warnings,
   };

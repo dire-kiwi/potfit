@@ -124,6 +124,13 @@ export interface FitMetrics {
   enclosedFraction: number;
   /** Estimated horizontal offset of the cavity axis from the reference axis. */
   cavityCenterOffset: { x: number; z: number } | null;
+  /**
+   * Side wall thickness measured horizontally outwards from the cavity axis,
+   * sampled around the pot above the floor: thinnest, its height, and median.
+   */
+  wallThickness: { min: number; at: number; median: number } | null;
+  /** Thickness of the floor slab under the cavity, measured at the axis. */
+  floorThickness: number | null;
   /** Sampled profile over the reference pot's height. */
   profile: ProfileRow[];
   warnings: string[];
@@ -151,11 +158,27 @@ export interface CodexResult {
   confidence: 'high' | 'medium' | 'low';
 }
 
+export interface ReviewFinding {
+  severity: 'major' | 'minor' | 'info';
+  title: string;
+  detail: string;
+}
+
+/** An independent Codex review of a finished fit. */
+export interface ReviewResult {
+  verdict: 'pass' | 'concerns' | 'fail';
+  summary: string;
+  findings: ReviewFinding[];
+  /** Instruction the user can send to the fitting agent; empty for a pass. */
+  feedbackForFitter: string;
+}
+
 export interface CodexRun {
   id: string;
   modelId: string;
-  kind: 'fit' | 'feedback';
-  /** User instructions (fit) or feedback text. */
+  /** fit and feedback change the placement; review only looks at it. */
+  kind: 'fit' | 'feedback' | 'review';
+  /** User instructions (fit) or feedback text; empty for reviews. */
   message: string;
   status: CodexRunStatus;
   startedAt: string;
@@ -165,7 +188,9 @@ export interface CodexRun {
   fitBefore: FitSettings;
   referenceId: string | null;
   result: CodexResult | null;
-  /** Server-side check of the result transform. */
+  /** Review runs only (absent on runs saved before reviews existed). */
+  review?: ReviewResult | null;
+  /** Server-side check of the result transform, or of the reviewed placement. */
   metrics: FitMetrics | null;
   error: string | null;
   /** User verdict on the result. */

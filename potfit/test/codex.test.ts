@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { parseResult, unwrapShell } from '../server/codex.ts';
+import { parseResult, parseReview, unwrapShell } from '../server/codex.ts';
 
 test('shell wrappers are removed from commands', () => {
   assert.equal(unwrapShell("/usr/bin/bash -lc 'echo hi'"), 'echo hi');
@@ -25,4 +25,19 @@ test('missing or malformed goals are ignored rather than failing the run', () =>
 
 test('JSON wrapped in prose is still found', () => {
   assert.equal(parseResult(`Here you go:\n${JSON.stringify({ transform, summary: 'ok' })}`).summary, 'ok');
+});
+
+test('reviews are validated', () => {
+  const r = parseReview(
+    JSON.stringify({
+      verdict: 'concerns',
+      summary: 'Tight at the rim.',
+      findings: [{ severity: 'major', title: 'Rim gap', detail: '1.9 mm' }, { severity: 'odd', title: 'x', detail: 'y' }],
+      feedbackForFitter: 'Scale up a little.',
+    }),
+  );
+  assert.equal(r.verdict, 'concerns');
+  assert.deepEqual(r.findings.map((f) => f.severity), ['major', 'info']);
+  assert.equal(r.feedbackForFitter, 'Scale up a little.');
+  assert.throws(() => parseReview(JSON.stringify({ summary: 'no verdict' })), /verdict/);
 });

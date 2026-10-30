@@ -62,20 +62,29 @@ address only on a network you trust; the host-name check is then switched off.
    use the quick phrases. Codex gets your current placement, including any
    manual moves, and fresh screenshots of both views. If you ask for different
    goals ("leave 2 mm for drainage"), Codex updates the fit settings too.
-6. **Manual adjustment**: drag the gizmo in either view (W move, E scale,
+6. **Review** starts a separate Codex session that checks the fit as it
+   stands now. It sees only the result: the placed pot, the reference pot, the
+   goals and screenshots of both views. It never sees the fitting conversation.
+   It reports a verdict (pass, concerns or fail), findings with numbers and
+   severities, and a suggested instruction for the fitter. *Use as feedback*
+   puts that suggestion in the feedback box for you to edit and send. If you
+   change the fit afterwards, the review is marked out of date. You can keep
+   moving the pot while a review runs; fitting waits until it finishes.
+7. **Manual adjustment**: drag the gizmo in either view (W move, E scale,
    Q view only, F frame), type exact numbers under Placement, or use *Centre
    on cavity* and *Seat on floor*. The scale lock keeps scaling uniform, round
    (x = z) or free. Ctrl+Z / Ctrl+Shift+Z undo and redo. *Quick fit (no AI)*
    runs the same solver Codex uses, without Codex.
-7. **Section view**: an orthographic cut through the reference axis. Cut faces
+8. **Section view**: an orthographic cut through the reference axis. Cut faces
    are pale, the reference pot is green and the required clearance is dashed.
    The slider turns the cut plane, and *Cut 3D view* applies the same cut to
    the 3D view.
-8. **Export STL** downloads the placed model, Z up and standing on z = 0.
+9. **Export STL** downloads the placed model, Z up and standing on z = 0.
 
 Measurements update live as you edit: narrowest radial gap and its height,
-rim offset, floor gap, whether the reference pot passes through the wall, and
-the outer size.
+rim offset, floor gap, whether the reference pot passes through the wall,
+thinnest wall and floor thickness after scaling (amber under 1.2 mm, red under
+0.8 mm), and the outer size.
 
 ## How the Codex fit works
 
@@ -88,14 +97,23 @@ runs in (`codex exec --json`, sandbox `workspace-write`). It holds:
 - `AGENTS.md`: the task, the coordinate conventions and the rules
 - `pot-tool`: a wrapper for `tools/pot-tool.ts`, with `analyze` (orientation
   candidates and the cavity profile), `solve` (the deterministic fit), `check`
-  (gaps, rim offset, floor gap, interference) and `render` (a PNG section Codex
-  can look at)
+  (gaps, rim offset, floor gap, interference, wall and floor thickness) and
+  `render` (a PNG section Codex can look at)
 
 Codex answers with JSON matching an output schema: a transform, the fit goals
 it used, a summary, warnings and a confidence. The server re-measures that
 transform itself before applying it. Feedback resumes the same thread with
 `codex exec resume`. Every run keeps its prompt, the images sent, the event
 log and the result under `data/models/<id>/runs/<runId>/`.
+
+A review runs in a fresh `workspace/` inside its run directory. It has its own
+`AGENTS.md`, `fitted.stl` (the model already placed in the pot frame, deleted
+when the review ends), and a `state.json` with `"placed": true`, the reference
+pot, the goals and the scale applied to the design. In placed mode `pot-tool
+check` and `render` measure the mesh as it is. A review is a one-off
+`codex exec --ephemeral` session with its own output schema; it never touches
+the fitting thread or the placement. The server re-measures the reviewed
+placement for the record.
 
 `pot-tool` works on its own too:
 

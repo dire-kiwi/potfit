@@ -57,7 +57,7 @@ export const api = {
   exportUrl: (id: string) => `/api/models/${id}/export.stl`,
 
   runs: (id: string) => request<CodexRun[]>('GET', `/api/models/${id}/runs`),
-  startRun: (id: string, body: { mode: 'fit' | 'feedback'; message: string; images: CodexImage[] }) =>
+  startRun: (id: string, body: { mode: CodexRun['kind']; message: string; images: CodexImage[] }) =>
     request<CodexRun>('POST', `/api/models/${id}/runs`, body),
   cancelRun: (id: string) => request<{ cancelled: boolean }>('POST', `/api/models/${id}/runs/cancel`),
   rateRun: (id: string, runId: string, rating: CodexRun['rating']) => request<CodexRun>('PATCH', `/api/models/${id}/runs/${runId}`, { rating }),

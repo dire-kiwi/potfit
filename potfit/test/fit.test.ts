@@ -134,3 +134,19 @@ test('a pot entirely below the reference does not count as a fit', () => {
   const m = checkFit(pot, t, ref, fit());
   assert.ok(!m.clearanceOk);
 });
+
+test('wall and floor thickness follow the scale', () => {
+  const a = analyzeMesh(pot);
+  const t = initialTransform(pot, a);
+  const m = checkFit(pot, t, ref, fit());
+  // The inner wall starts above the floor, so the horizontal thickness tapers
+  // from about 2.5 mm at the floor to the nominal 2 mm at the rim.
+  const horizontal = (y: number) => spec.r0 + ((spec.r1 - spec.r0) * y) / spec.h - innerRadius(spec, y);
+  near(m.wallThickness!.min, horizontal(m.wallThickness!.at - t.position.y), 0.02, 'wall');
+  near(m.wallThickness!.min, spec.wall, 0.05, 'wall near the rim');
+  assert.ok(m.wallThickness!.median > spec.wall && m.wallThickness!.median < horizontal(spec.floor), 'median wall');
+  near(m.floorThickness!, spec.floor, 0.15, 'floor');
+  const half = checkFit(pot, { ...t, scale: { x: 0.35, y: 0.35, z: 0.35 } }, ref, fit());
+  near(half.wallThickness!.min, spec.wall * 0.35, 0.03, 'scaled wall');
+  assert.ok(half.warnings.some((w) => /thinnest wall/.test(w)), half.warnings.join('; '));
+});

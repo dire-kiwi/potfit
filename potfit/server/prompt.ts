@@ -181,3 +181,104 @@ ${describeFit(model.fit)}
 ${describeImages(images)}
 state.json has been updated. Revise the fit to address the feedback, verify it with \`./pot-tool check\`, and reply with the JSON result.`;
 }
+
+// ------------------------------------------------------------------ review
+
+export const REVIEW_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['verdict', 'summary', 'findings', 'feedbackForFitter'],
+  properties: {
+    verdict: { type: 'string', enum: ['pass', 'concerns', 'fail'] },
+    summary: { type: 'string' },
+    findings: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['severity', 'title', 'detail'],
+        properties: {
+          severity: { type: 'string', enum: ['major', 'minor', 'info'] },
+          title: { type: 'string' },
+          detail: { type: 'string' },
+        },
+      },
+    },
+    feedbackForFitter: { type: 'string' },
+  },
+};
+
+export function reviewAgentsMd(): string {
+  return `# Pot fit review workspace
+
+You are reviewing a finished fit: a decorative outer pot (a cachepot) that has
+been scaled and placed around a reference nursery pot, the plain inner pot that
+holds the plant. Someone else made the fit and you only see the result, so
+judge it on its own merits.
+
+## Files
+
+- \`fitted.stl\`: the outer pot as fitted, in the pot frame: millimetres, +Y up,
+  with the reference pot's base centre at the origin and its axis along +Y.
+- \`state.json\`: the reference pot, the goals the fit has to meet, and how much
+  the design was scaled from its original size.
+- \`./pot-tool\`: measuring helper (\`./pot-tool help\`). Here \`check\` and
+  \`render\` measure fitted.stl exactly as placed; you don't need a transform.
+
+The reference pot is a frustum: radius bottomOD/2 at y = 0, topOD/2 at
+y = height. Clearance is diametral, so the radial gap must be at least
+clearance / 2 everywhere along it. topOffset is how far the reference pot's rim
+should stand above the outer pot's rim (null: no target, it should just sit on
+the floor). floorGap is the gap wanted under the reference pot.
+
+## What to check
+
+1. The reference pot goes in without passing through the outer pot, with at
+   least the required clearance all the way down, including at a narrower rim.
+2. It rests on the cavity floor with the wanted floor gap instead of hanging on
+   the walls, and it is centred in the cavity.
+3. The rim offset matches the goal.
+4. The scaled pot still prints: wall and floor thickness (flag under about
+   1.2 mm for FDM printing, and under 0.8 mm as major) and overall size.
+5. The design isn't visibly distorted, e.g. width and height scaled very
+   differently.
+6. Anything else wrong in the renders: upside down, tilted, cut off, the
+   reference pot outside the cavity, decorations or inner features in the way.
+
+Use \`./pot-tool check\`, \`./pot-tool analyze\` and
+\`./pot-tool render --out section.png\` (also \`--angle 90\`), and look at the
+images if you can view images. Work only in this directory and don't modify
+fitted.stl or state.json.
+
+## Answer
+
+- \`verdict\`: pass (ready to print), concerns (usable, but the user should look
+  at something), fail (needs refitting).
+- \`summary\`: 2-4 plain sentences with the key numbers.
+- \`findings\`: concrete issues with numbers, most important first. Severity
+  major, minor or info. Leave out things that are fine; an empty list is right
+  for a clean pass.
+- \`feedbackForFitter\`: unless the verdict is pass, a short instruction the
+  user can send to the agent that made the fit, e.g. "Scale up until the
+  narrowest gap is at least 2.5 mm; it is 1.9 mm at the rim." Empty for a pass.
+`;
+}
+
+export interface ReviewDesign {
+  scale: { x: number; y: number; z: number };
+  originalSize: { x: number; y: number; z: number };
+  fittedSize: { x: number; y: number; z: number };
+}
+
+export function reviewPrompt(ref: ReferencePot, fit: FitSettings, design: ReviewDesign, images: string[]): string {
+  const size = (s: ReviewDesign['originalSize']) => `${s.x.toFixed(1)} x ${s.z.toFixed(1)} mm wide, ${s.y.toFixed(1)} mm tall`;
+  const sc = design.scale;
+  return `Review the fitted pot in this directory.
+
+Reference pot: ${ref.name}: top OD ${mm(ref.topOD)}, bottom OD ${mm(ref.bottomOD)}, height ${mm(ref.height)}${ref.notes ? ` (${ref.notes})` : ''}
+Goals:
+${describeFit(fit)}
+Design: originally ${size(design.originalSize)}; scaled x ${sc.x.toFixed(4)}, y (height) ${sc.y.toFixed(4)}, z ${sc.z.toFixed(4)} to ${size(design.fittedSize)}.
+${describeImages(images)}
+Follow AGENTS.md and reply with the JSON review.`;
+}

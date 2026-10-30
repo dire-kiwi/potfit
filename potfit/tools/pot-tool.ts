@@ -7,7 +7,7 @@ import { dirname, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { analyzeMesh, checkFit, solveFit, type ReferenceDims } from '../shared/fit.ts';
 import { parseSTL } from '../shared/stl.ts';
-import { applyTransform, computeBounds, validateTransform } from '../shared/transform.ts';
+import { anchorFor, applyTransform, computeBounds, validateTransform } from '../shared/transform.ts';
 import { DEFAULT_FIT, type FitMetrics, type FitSettings, type PotTransform, type ScaleMode, type UpAxis } from '../shared/types.ts';
 import { renderSection } from './section-png.ts';
 
@@ -20,7 +20,9 @@ Commands
   render    Draw a side-on section of a transform as a PNG
 
 Inputs default to ./state.json, which holds the mesh path, reference pot, fit
-settings and the transform currently shown in the app.
+settings and the transform currently shown in the app. When state.json has
+"placed": true (a review workspace), the mesh is already in the pot frame and
+check and render measure it as it is.
 
 Options
   --state <file>         state file (default ./state.json)
@@ -39,6 +41,8 @@ Options
 
 interface State {
   mesh?: string;
+  /** The mesh is already placed in the pot frame (review workspaces). */
+  placed?: boolean;
   reference?: (ReferenceDims & { name?: string }) | null;
   fit?: Partial<FitSettings>;
   transform?: PotTransform;
@@ -108,8 +112,13 @@ function reference(): ReferenceDims & { name?: string } {
   return ref;
 }
 
+/** The transform that leaves a mesh where it is: +Y up, scale 1, anchor unchanged. */
+function asPlaced(): PotTransform {
+  return { up: '+Y', spin: 0, position: anchorFor(raw, '+Y'), scale: { x: 1, y: 1, z: 1 } };
+}
+
 function transformArg(): PotTransform {
-  let t: unknown = state.transform;
+  let t: unknown = state.placed ? asPlaced() : state.transform;
   if (values.transform !== undefined) {
     const src = values.transform.trim();
     t = JSON.parse(src.startsWith('{') ? src : readFileSync(resolve(src), 'utf8'));
@@ -137,6 +146,8 @@ function formatMetrics(m: FitMetrics, fit: FitSettings): string {
     `drop to contact       ${f2(m.dropToContact)} mm`,
     `enclosed fraction     ${f2(m.enclosedFraction, 3)}`,
     `cavity axis offset    ${m.cavityCenterOffset ? `x ${f2(m.cavityCenterOffset.x, 3)}, z ${f2(m.cavityCenterOffset.z, 3)}` : 'n/a'}`,
+    `wall thickness        ${m.wallThickness ? `thinnest ${f2(m.wallThickness.min)} mm at y=${f2(m.wallThickness.at, 1)}, median ${f2(m.wallThickness.median)} mm (measured horizontally)` : 'n/a'}`,
+    `floor thickness       ${f2(m.floorThickness)} mm`,
     '',
     '     y   cavity R    ref R      gap',
     ...m.profile.map((r) => `${f2(r.y, 1).padStart(6)} ${f2(r.cavityRadius).padStart(10)} ${f2(r.referenceRadius).padStart(8)} ${f2(r.gap).padStart(8)}`),
@@ -178,6 +189,7 @@ switch (command) {
   case 'solve': {
     const fit = fitSettings();
     const ref = reference();
+    if (state.placed) process.stderr.write('note: this mesh is already placed, so solve reports scales relative to the current fit\n');
     const up = (values.up ?? state.transform?.up ?? analyzeMesh(positions).suggestedUp) as UpAxis;
     if (!['+X', '-X', '+Y', '-Y', '+Z', '-Z'].includes(up)) fail('--up must be one of +X -X +Y -Y +Z -Z');
     const spin = num(values.spin, 'spin') ?? state.transform?.spin ?? 0;

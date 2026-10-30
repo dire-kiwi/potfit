@@ -25,6 +25,12 @@ interface Props {
 const mm = (v: number | null | undefined, digits = 2) =>
   v === null || v === undefined || Number.isNaN(v) ? '–' : Number.isFinite(v) ? `${v.toFixed(digits)} mm` : '∞';
 
+/** Thin walls or floors may not print; 1.2 mm is a common FDM minimum. */
+function thicknessClass(m: FitMetrics): string {
+  const thinnest = Math.min(m.wallThickness?.min ?? Infinity, m.floorThickness ?? Infinity);
+  return thinnest < 0.8 ? 'bad' : thinnest < 1.2 ? 'warn' : '';
+}
+
 function scaleWithLock(prev: Vec3, axis: keyof Vec3, value: number, lock: ScaleLock): Vec3 {
   if (lock === 'uniform') {
     const k = value / prev[axis];
@@ -203,6 +209,10 @@ export function FitPanel(props: Props) {
               <dt>Fits</dt>
               <dd className={metrics.clearanceOk ? 'ok' : metrics.interferes ? 'bad' : 'warn'}>
                 {metrics.interferes ? 'No: reference passes through the wall' : metrics.clearanceOk ? 'Yes' : 'Tighter than the clearance'}
+              </dd>
+              <dt>Wall / floor</dt>
+              <dd className={thicknessClass(metrics)}>
+                {metrics.wallThickness ? `${mm(metrics.wallThickness.min)} thinnest` : '–'} · floor {mm(metrics.floorThickness)}
               </dd>
               <dt>Outer size</dt>
               <dd>
