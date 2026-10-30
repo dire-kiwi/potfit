@@ -73,6 +73,13 @@ Measured cavities, from `macetas_vs_v3_dimensions.json`:
 | Faceted | 55.0 | 35.3 | 51.7 | 48.6 |
 | Spiral | 55.0 | 38.2 | 57.5 | 52.5 |
 
+## Potfit: fitting other pot models
+
+`potfit/` is a three.js web app that scales and aligns any pot model (STL,
+3MF, OBJ, GLB, PLY) around a saved reference nursery pot. Codex does the
+fitting; you review it in 3D and section views, give feedback or adjust it by
+hand, and export the result. See [potfit/README.md](potfit/README.md).
+
 ## Notes
 
 - `cactus_pot.blend1` is a Blender auto-backup of `cactus_pot.blend`.
