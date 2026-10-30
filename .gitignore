@@ -1,0 +1,3 @@
+# Blender scenes are large (one is 125 MB), so they stay out of git; the scripts write them.
+*.blend
+*.blend1
