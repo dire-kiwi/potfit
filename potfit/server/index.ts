@@ -12,6 +12,11 @@ import { NotFound, Store } from './store.ts';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const port = Number(process.env.POTFIT_PORT ?? 5174);
+// The API is unauthenticated and drives Codex under the user's login, so it
+// only listens on loopback unless POTFIT_HOST says otherwise.
+const host = process.env.POTFIT_HOST || '127.0.0.1';
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
+const loopbackOnly = LOOPBACK_HOSTS.has(host);
 const dataDir = resolve(process.env.POTFIT_DATA ?? join(root, 'data'));
 const codexBin = process.env.POTFIT_CODEX_BIN ?? 'codex';
 
@@ -25,6 +30,15 @@ const codex = new CodexRunner(store, {
 await codex.recover();
 
 const app = express();
+// Refuse requests addressed to any other host name while bound to loopback, so
+// a web page can't reach the API through DNS rebinding.
+if (loopbackOnly) {
+  app.use((req, res, next) => {
+    const name = (req.headers.host ?? '').replace(/:\d+$/, '').replace(/^\[(.*)\]$/, '$1');
+    if (LOOPBACK_HOSTS.has(name)) return next();
+    res.status(403).json({ error: 'potfit only accepts requests addressed to localhost' });
+  });
+}
 app.use(express.json({ limit: '64mb' }));
 
 type Handler = (req: Request, res: Response) => Promise<unknown>;
@@ -259,6 +273,12 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
   res.status(status).json({ error: err.message });
 });
 
-app.listen(port, () => {
-  console.log(`potfit API on http://localhost:${port} (data in ${dataDir})`);
+app.listen(port, host, () => {
+  const shown = host.includes(':') ? `[${host}]` : host;
+  console.log(`potfit API on http://${shown}:${port} (data in ${dataDir})`);
+  if (!loopbackOnly) {
+    console.warn(
+      `warning: POTFIT_HOST=${host} exposes an unauthenticated API that runs Codex as you; anyone who can reach it can read your files through Codex.`,
+    );
+  }
 });

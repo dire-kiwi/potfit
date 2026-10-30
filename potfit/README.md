@@ -28,11 +28,18 @@ npm start          # http://localhost:5174
 
 | Variable | Default | |
 | --- | --- | --- |
+| `POTFIT_HOST` | `127.0.0.1` | Address the API (and built app) listens on |
 | `POTFIT_PORT` | `5174` | API (and built app) port |
 | `POTFIT_WEB_PORT` | `5173` | Vite dev server port |
 | `POTFIT_DATA` | `potfit/data` | Where references, models and Codex runs are stored |
 | `POTFIT_CODEX_BIN` | `codex` | Codex executable |
 | `POTFIT_CODEX_MODEL` | Codex's configured default | Model passed to `codex exec -m` |
+
+The API has no authentication, and it runs Codex as you with read access to
+your whole filesystem. Anyone who can reach it can have Codex read your files
+and report them back. So it only listens on loopback and only answers requests
+addressed to `localhost`, `127.0.0.1` or `[::1]`. Set `POTFIT_HOST` to another
+address only on a network you trust; the host-name check is then switched off.
 
 ## Using it
 
