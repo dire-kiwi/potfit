@@ -19,6 +19,9 @@ import { PotViewer, type GizmoMode, type ScaleLock } from './viewer/PotViewer.ts
 
 const LAST_MODEL_KEY = 'potfit.model';
 
+/** On a phone one sidebar shows under the views, or neither (`view`). */
+type MobileTab = 'models' | 'view' | 'model';
+
 function addToLog(entries: LogEntry[], e: CodexEvent): LogEntry[] {
   if (e.type === 'item') {
     const i = entries.findIndex((x) => x.kind === 'item' && x.item.id === e.item.id);
@@ -57,6 +60,9 @@ export function App() {
   const [scaleLock, setScaleLock] = useState<ScaleLock>('uniform');
   const [sectionAngle, setSectionAngle] = useState(0);
   const [cutaway, setCutaway] = useState(false);
+  const [tab, setTab] = useState<MobileTab>(() => (localStorage.getItem(LAST_MODEL_KEY) ? 'model' : 'models'));
+  // Narrow screens show one view at a time; the other stays laid out so Codex screenshots still work.
+  const [shownView, setShownView] = useState<'main' | 'section'>('main');
   // Undo history lives in a ref (it is only read in event handlers); bump re-renders the buttons.
   const history = useRef<{ past: PotTransform[]; future: PotTransform[] }>({ past: [], future: [] });
   const [, bumpHistory] = useReducer((n: number) => n + 1, 0);
@@ -316,6 +322,11 @@ export function App() {
     };
   }, [selectedId, geometry, subscribe]);
 
+  // Without a model the phone's fit tab is empty; show the list instead.
+  useEffect(() => {
+    if (!selectedId) setTab((t) => (t === 'model' ? 'models' : t));
+  }, [selectedId]);
+
   // Live measurements, computed in the worker.
   useEffect(() => {
     if (!model || !positions || !reference) {
@@ -384,7 +395,10 @@ export function App() {
       last = await api.uploadModel(p.name, file.name, writeBinarySTL(p.positions, p.name));
     }
     setModels(await api.models());
-    if (last) setSelectedId(last.id);
+    if (last) {
+      setSelectedId(last.id);
+      setTab('model');
+    }
   };
 
   const onFiles = async (files: File[]) => {
@@ -553,7 +567,7 @@ export function App() {
   );
 
   return (
-    <div className="app">
+    <div className={`app tab-${tab}`}>
       <aside className="sidebar left">
         <div className="brand">
           <h1>Potfit</h1>
@@ -566,6 +580,7 @@ export function App() {
           onSelect={async (id) => {
             await flushSave();
             setSelectedId(id);
+            setTab('model');
           }}
           onFiles={onFiles}
           onNewDesign={() => setDesigning(true)}
@@ -637,19 +652,27 @@ export function App() {
             </div>
           )}
         </div>
-        <div className="views">
-          <div className="view">
+        <div className={`views show-${shownView}`}>
+          <div className="view main">
             <div className="view-label">3D</div>
             <div className="canvas-host" ref={mainEl} />
           </div>
-          <div className="view">
+          <div className="view section">
             <div className="view-label">Section {sectionAngle ? `(${sectionAngle}°)` : '(side on)'}</div>
             <div className="canvas-host" ref={sectionEl} />
             <div className="legend">
               <span className="sw cut" /> cut wall <span className="sw ref" /> reference pot <span className="sw env" /> required clearance
             </div>
           </div>
-          {!model && !busy && <div className="empty">Import a pot model, design a new one, or pick one on the left.</div>}
+          <div className="segmented view-switch">
+            <button className={shownView === 'main' ? 'on' : ''} onClick={() => setShownView('main')}>
+              3D
+            </button>
+            <button className={shownView === 'section' ? 'on' : ''} onClick={() => setShownView('section')}>
+              Section
+            </button>
+          </div>
+          {!model && !busy && <div className="empty">Import a pot model, design a new one, or pick one from the list.</div>}
         </div>
       </main>
 
@@ -707,6 +730,19 @@ export function App() {
         )}
       </aside>
 
+      <nav className="mobile-tabs">
+        <button className={tab === 'models' ? 'on' : ''} onClick={() => setTab('models')}>
+          Models
+        </button>
+        <button className={tab === 'view' ? 'on' : ''} onClick={() => setTab('view')}>
+          View
+        </button>
+        <button className={tab === 'model' ? 'on' : ''} onClick={() => setTab('model')}>
+          {model?.design ? 'Design' : 'Fit'}
+          {activeRun && <span className="spinner" title="Codex is working" />}
+        </button>
+      </nav>
+
       {designing && (
         <DesignDialog
           references={references}
@@ -719,6 +755,7 @@ export function App() {
             setModels(await api.models().catch(() => [m]));
             // Loading the model picks up the design run and streams it.
             setSelectedId(m.id);
+            setTab('model');
           }}
         />
       )}

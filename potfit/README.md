@@ -113,6 +113,20 @@ rim offset, floor gap, whether the reference pot passes through the wall,
 thinnest wall and floor thickness after scaling (amber under 1.2 mm, red under
 0.8 mm), and the outer size.
 
+### On a phone or tablet
+
+On a narrow or short screen the views sit on top and the panels below them
+(beside them on a phone held sideways). Tabs switch between **Models** (the
+left panels), **Fit** or **Design** (the right panels) and **View** (no
+panels, so the views get the whole screen). One view shows at a time; *3D* and
+*Section* over it switch between them. In the 3D view one finger turns the
+camera; in the section view it pans. Two fingers zoom and pan in both, and a
+finger on the gizmo moves or scales the pot.
+
+The server only listens on loopback by default, and the Vite dev server
+always does. To use a phone, build the app and run `npm start` with
+`POTFIT_HOST` set to an address the phone can reach (see the warning above).
+
 ## How the Codex fit works
 
 Each model gets a working directory, `data/models/<id>/codex/`, that Codex

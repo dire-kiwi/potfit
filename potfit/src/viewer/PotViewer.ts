@@ -45,6 +45,8 @@ interface View {
   potGroup: THREE.Group;
   front: THREE.Mesh;
   back: THREE.Mesh;
+  /** Width / height at the last resize; 0 before the first. */
+  aspect: number;
 }
 
 function makeRenderer(el: HTMLElement): THREE.WebGLRenderer {
@@ -145,12 +147,13 @@ export class PotViewer {
     return { group, front, back };
   }
 
-  private addGizmo(view: Omit<View, 'gizmo' | 'handle'>): Pick<View, 'gizmo' | 'handle'> {
+  private addGizmo(view: Omit<View, 'gizmo' | 'handle' | 'aspect'>): Pick<View, 'gizmo' | 'handle'> {
     const handle = new THREE.Object3D();
     view.scene.add(handle);
     const gizmo = new TransformControls(view.camera, view.renderer.domElement);
     gizmo.setSpace('world');
-    gizmo.setSize(0.8);
+    // Fingers need bigger handles than a mouse.
+    gizmo.setSize(matchMedia('(pointer: coarse)').matches ? 1.2 : 0.8);
     gizmo.attach(handle);
     view.scene.add(gizmo.getHelper());
     gizmo.addEventListener('dragging-changed', (e) => {
@@ -187,7 +190,7 @@ export class PotViewer {
     const { group, front, back } = this.potMeshes(true);
     scene.add(group, this.refMain, this.grid);
     const partial = { el, renderer, scene, camera, orbit, potGroup: group, front, back };
-    return { ...partial, ...this.addGizmo(partial) };
+    return { ...partial, ...this.addGizmo(partial), aspect: 0 };
   }
 
   private makeSectionView(el: HTMLElement): View {
@@ -203,12 +206,13 @@ export class PotViewer {
     const orbit = new OrbitControls(camera, renderer.domElement);
     orbit.enableRotate = false;
     orbit.mouseButtons = { LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN };
+    orbit.touches = { ONE: THREE.TOUCH.PAN, TWO: THREE.TOUCH.DOLLY_PAN };
     orbit.target.set(0, 30, 0);
     orbit.addEventListener('change', () => this.invalidate());
     const { group, front, back } = this.potMeshes(true);
     scene.add(group, this.refSection, this.sectionGrid);
     const partial = { el, renderer, scene, camera, orbit, potGroup: group, front, back };
-    return { ...partial, ...this.addGizmo(partial) };
+    return { ...partial, ...this.addGizmo(partial), aspect: 0 };
   }
 
   // ------------------------------------------------------------ public API
@@ -346,6 +350,7 @@ export class PotViewer {
     for (const v of [this.main, this.section]) {
       const w = Math.max(1, v.el.clientWidth), h = Math.max(1, v.el.clientHeight);
       v.renderer.setSize(w, h);
+      this.keepFraming(v, w / h);
       if (v.camera instanceof THREE.PerspectiveCamera) {
         v.camera.aspect = w / h;
       } else {
@@ -362,6 +367,26 @@ export class PotViewer {
       });
     }
     this.invalidate();
+  }
+
+  /**
+   * When a view changes shape, keep what fitted across its narrower side
+   * fitting. Otherwise a pot framed in a wide view loses its sides when the
+   * view turns tall, as it does on a phone.
+   */
+  private keepFraming(v: View, aspect: number) {
+    const before = v.aspect;
+    v.aspect = aspect;
+    if (!before) return;
+    const k = Math.min(1, before) / Math.min(1, aspect);
+    if (Math.abs(k - 1) < 1e-9) return;
+    if (v.camera instanceof THREE.PerspectiveCamera) {
+      const target = v.orbit.target;
+      v.camera.position.sub(target).multiplyScalar(k).add(target);
+      v.orbit.update();
+    } else {
+      this.sectionHalfHeight *= k;
+    }
   }
 
   private sceneBox(): THREE.Box3 {
