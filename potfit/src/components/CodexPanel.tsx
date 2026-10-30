@@ -118,7 +118,8 @@ function ResultCard({ run, onRate, onRevert }: { run: CodexRun; onRate: Props['o
       <p>{run.result.summary}</p>
       <p className="muted">
         Confidence {run.result.confidence} · scale {s.x === s.y && s.y === s.z ? s.x.toFixed(4) : `${s.x.toFixed(4)} / ${s.y.toFixed(4)} / ${s.z.toFixed(4)}`}
-        {m && ` · narrowest gap ${m.minRadialGap?.toFixed(2)} mm · rim proud ${m.topOffset.toFixed(2)} mm`}
+        {m && typeof m.minRadialGap === 'number' && ` · narrowest gap ${m.minRadialGap.toFixed(2)} mm`}
+        {m && typeof m.topOffset === 'number' && ` · rim proud ${m.topOffset.toFixed(2)} mm`}
       </p>
       {changes.length > 0 && <p className="muted">Updated fit settings: {changes.join(', ')}.</p>}
       {run.result.warnings.length > 0 && (

@@ -241,7 +241,7 @@ export function checkFit(positions: Float32Array, t: PotTransform, ref: Referenc
   }
 
   const topOffset = f.h - b.max.y;
-  const clearanceOk = !interferes && minGap >= cr - 0.05;
+  const clearanceOk = inRange > 0 && !interferes && minGap >= cr - 0.05;
   if (inRange === 0) warnings.push('The outer pot does not overlap the reference pot vertically at all.');
   if (interferes) warnings.push(`The reference pot passes through the outer pot (worst overlap ${(-minGap).toFixed(2)} mm at y=${minGapAt.toFixed(1)}).`);
   else if (minGap < cr - 0.05) warnings.push(`Radial gap is ${minGap.toFixed(2)} mm at y=${minGapAt.toFixed(1)}, below the ${cr.toFixed(2)} mm required.`);
@@ -339,27 +339,27 @@ export function solveFit(positions: Float32Array, ref: ReferenceDims, opts: Solv
     const onFloor = sh * floorTop + opts.floorGap;
     return { base: Math.max(walls, onFloor), hang: walls - onFloor };
   };
-  const tol = 0.05;
+  const tol = Math.min(0.05, top / 1000);
   let sr: number, sh: number;
   if (opts.mode === 'uniform') {
     if (opts.topOffset === null) {
-      sr = sh = bisect(1e-3, 1e3, (s) => place(s, s).hang <= tol);
+      sr = sh = bisect(1e-4, 1e4, (s) => place(s, s).hang <= tol);
     } else {
       const target = opts.topOffset;
       if (target >= f.h) throw new Error(`A top offset of ${target} mm would leave the reference pot (${f.h} mm tall) entirely above the outer pot.`);
-      sr = sh = bisect(1e-3, 1e3, (s) => place(s, s).base + f.h - s * top <= target);
+      sr = sh = bisect(1e-4, 1e4, (s) => place(s, s).base + f.h - s * top <= target);
     }
   } else {
     const target = opts.topOffset ?? 0;
     // On the floor, rim offset = floorGap + H - sh * (top - floorTop).
     sh = (f.h + opts.floorGap - target) / (top - floorTop);
     if (!(sh > 0)) throw new Error(`Cannot reach a top offset of ${target} mm: the reference pot is only ${f.h} mm tall.`);
-    sr = bisect(1e-3, 1e3, (s) => place(s, sh).hang <= tol);
+    sr = bisect(1e-4, 1e4, (s) => place(s, sh).hang <= tol);
   }
   const { base, hang } = place(sr, sh);
   if (hang > tol) notes.push(`At this scale the walls hold the reference pot ${hang.toFixed(2)} mm above the floor.`);
   if (opts.mode === 'uniform' && opts.topOffset !== null && hang <= tol) {
-    const sFloor = bisect(1e-3, 1e3, (s) => place(s, s).hang <= tol);
+    const sFloor = bisect(1e-4, 1e4, (s) => place(s, s).hang <= tol);
     if (sFloor > sr * 1.0005) notes.push(`Scale ${sFloor.toFixed(4)} would be needed for the reference pot to reach the floor with full clearance.`);
   }
   if (opts.mode === 'radial-height' && Math.abs(sr - sh) / Math.max(sr, sh) > 0.25) {

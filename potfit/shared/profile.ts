@@ -29,10 +29,13 @@ export interface Frustum {
   h: number;
 }
 
-/** Slice positions strictly inside (minY, maxY) at roughly `targetStep` spacing. */
+/**
+ * Slice positions strictly inside (minY, maxY) at roughly `targetStep` spacing,
+ * with at least 200 slices (for models in metres) and at most `maxSlices`.
+ */
 export function gridFor(minY: number, maxY: number, targetStep = 0.2, maxSlices = 3000): Grid {
   const span = Math.max(maxY - minY, 1e-6);
-  const step = Math.max(targetStep, span / maxSlices);
+  const step = Math.max(Math.min(targetStep, span / 200), span / maxSlices);
   const n = Math.max(1, Math.floor(span / step));
   return { y0: minY + step / 2, step, n };
 }

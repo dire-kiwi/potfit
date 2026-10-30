@@ -117,3 +117,20 @@ test('cactus pot v3 fits the 60/40 x 55 nursery pot it was designed for', { skip
   near(r.radialScale, 1, 0.003, 'radial');
   near(r.heightScale, 1, 0.003, 'height');
 });
+
+test('a model in metres is measured just as well', () => {
+  const metres = new Float32Array(pot.length);
+  for (let i = 0; i < pot.length; i++) metres[i] = pot[i] / 1000;
+  const a = analyzeMesh(metres);
+  assert.equal(a.suggestedUp, '+Z');
+  near(a.floorTop!, spec.floor / 1000, 0.0002, 'floor');
+  assert.ok(a.warnings.some((w) => /millimetres/.test(w)));
+  const r = solveFit(metres, ref, { up: '+Z', spin: 0, mode: 'uniform', clearance, topOffset: 0, floorGap: 0 });
+  near(r.radialScale, 1000, 5, 'scale');
+});
+
+test('a pot entirely below the reference does not count as a fit', () => {
+  const t = { up: '+Z' as const, spin: 0, position: { x: 0, y: -500, z: 0 }, scale: { x: 1, y: 1, z: 1 } };
+  const m = checkFit(pot, t, ref, fit());
+  assert.ok(!m.clearanceOk);
+});
