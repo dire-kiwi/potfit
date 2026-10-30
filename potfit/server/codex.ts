@@ -1,5 +1,5 @@
-// Runs `codex exec` to fit a model or review a fit, streams its events, and
-// applies (fit) or records (review) the result.
+// Runs `codex exec` to fit a model, review a fit or design a pot, streams its
+// events, and applies (fit, design) or records (review) the result.
 
 import { spawn, execFile, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -11,7 +11,9 @@ import { promisify } from 'node:util';
 import { checkFit } from '../shared/fit.ts';
 import { parseSTL, writeBinarySTL } from '../shared/stl.ts';
 import { applyTransform, computeBounds, orientedBounds, validateTransform } from '../shared/transform.ts';
-import type { CodexEvent, CodexItem, CodexResult, CodexRun, FitGoals, PotModel, ReferencePot, ReviewResult } from '../shared/types.ts';
+import type { CodexEvent, CodexItem, CodexResult, CodexRun, CodexRunKind, DesignResult, FitGoals, PotModel, ReferencePot, ReviewResult } from '../shared/types.ts';
+import { DEFAULT_DESIGN_NAME, type DesignImage, type Designs } from './design.ts';
+import { DESIGN_SCHEMA, designFeedbackPrompt, designPrompt } from './design-prompt.ts';
 import { agentsMd, feedbackPrompt, fitPrompt, OUTPUT_SCHEMA, REVIEW_SCHEMA, reviewAgentsMd, reviewPrompt } from './prompt.ts';
 import type { Store } from './store.ts';
 
@@ -34,10 +36,15 @@ interface ActiveRun {
 }
 
 export interface StartInput {
-  mode: 'fit' | 'feedback' | 'review';
+  mode: CodexRunKind;
   message: string;
-  images: { name: string; data: Buffer }[];
+  /** Screenshots of the app's views. */
+  images: DesignImage[];
+  /** Images the user attached; designed pots keep them as reference images. */
+  attachments?: DesignImage[];
 }
+
+const isDesignRun = (kind: CodexRunKind) => kind === 'design' || kind === 'design-feedback';
 
 const MAX_OUTPUT = 6000;
 const truncate = (s: string | undefined, n = MAX_OUTPUT) => (s && s.length > n ? `${s.slice(0, n)}\n... (${s.length - n} more characters)` : s);
@@ -111,6 +118,16 @@ function parseJson(text: string): Record<string, unknown> {
   }
 }
 
+export function parseDesignResult(text: string): DesignResult {
+  const o = parseJson(text);
+  return {
+    title: typeof o.title === 'string' ? o.title.trim().slice(0, 80) : '',
+    summary: typeof o.summary === 'string' ? o.summary : '',
+    warnings: Array.isArray(o.warnings) ? o.warnings.map(String) : [],
+    confidence: o.confidence === 'high' || o.confidence === 'low' ? o.confidence : 'medium',
+  };
+}
+
 export function parseReview(text: string): ReviewResult {
   const o = parseJson(text);
   if (o.verdict !== 'pass' && o.verdict !== 'concerns' && o.verdict !== 'fail') throw new Error('Codex returned a review without a verdict');
@@ -141,10 +158,12 @@ export async function codexVersion(bin: string): Promise<{ available: boolean; v
 export class CodexRunner {
   private active = new Map<string, ActiveRun>(); // by model id
   private store: Store;
+  private designs: Designs;
   private opts: CodexOptions;
 
-  constructor(store: Store, opts: CodexOptions) {
+  constructor(store: Store, designs: Designs, opts: CodexOptions) {
     this.store = store;
+    this.designs = designs;
     this.opts = opts;
   }
 
@@ -157,10 +176,24 @@ export class CodexRunner {
     for (const model of await this.store.listModels()) {
       for (const run of await this.store.listRuns(model.id)) {
         if (run.status === 'running') {
+          if (isDesignRun(run.kind)) await this.restoreScript(run.modelId, this.store.runDir(run.modelId, run.id));
           await this.store.saveRun({ ...run, status: 'error', error: 'The server stopped while this run was in progress.', finishedAt: new Date().toISOString() });
         }
       }
     }
+  }
+
+  /**
+   * Put back the design script from before a run that didn't finish, so the
+   * workspace matches the model's mesh again. Codex's partial version is kept
+   * in the run directory.
+   */
+  private async restoreScript(modelId: string, runDir: string) {
+    const before = join(runDir, 'before.mjs');
+    if (!existsSync(before)) return;
+    const script = this.designs.scriptPath(modelId);
+    await copyFile(script, join(runDir, 'after.mjs')).catch(() => undefined);
+    await copyFile(before, script).catch(() => undefined);
   }
 
   /**
@@ -192,9 +225,12 @@ export class CodexRunner {
     if (this.active.has(modelId)) throw new Conflict('Codex is already working on this model');
     const model = await this.store.getModel(modelId);
     const ref = model.fit.referenceId ? await this.store.getReference(model.fit.referenceId) : null;
-    if (!ref) throw new BadRequest(`Choose a reference pot before asking Codex to ${input.mode === 'review' ? 'review' : 'fit'} the model`);
+    const verb = input.mode === 'review' ? 'review' : isDesignRun(input.mode) ? 'design' : 'fit';
+    if (!ref) throw new BadRequest(`Choose a reference pot before asking Codex to ${verb} the model`);
+    if (isDesignRun(input.mode) && !model.design) throw new BadRequest('This model was imported; only designed pots can be redesigned');
     if (input.mode === 'feedback' && !model.codexThreadId) throw new BadRequest('There is no Codex conversation to give feedback on yet; run a fit first');
-    if (input.mode === 'feedback' && !input.message.trim()) throw new BadRequest('Feedback is empty');
+    if (input.mode === 'design-feedback' && !model.design?.threadId) throw new BadRequest('There is no design conversation to give feedback on yet');
+    if ((input.mode === 'feedback' || input.mode === 'design-feedback') && !input.message.trim()) throw new BadRequest('Feedback is empty');
 
     const run: CodexRun = {
       id: randomUUID(),
@@ -204,12 +240,16 @@ export class CodexRunner {
       status: 'running',
       startedAt: new Date().toISOString(),
       finishedAt: null,
-      threadId: input.mode === 'feedback' ? model.codexThreadId : null,
+      threadId: input.mode === 'feedback' ? model.codexThreadId : input.mode === 'design-feedback' ? (model.design?.threadId ?? null) : null,
       transformBefore: model.transform,
       fitBefore: model.fit,
       referenceId: ref.id,
       result: null,
       review: null,
+      design: null,
+      designReport: null,
+      paramsBefore: isDesignRun(input.mode) ? (model.design?.params ?? null) : null,
+      attachments: [],
       metrics: null,
       error: null,
       rating: null,
@@ -291,26 +331,54 @@ export class CodexRunner {
     const { run } = a;
     const runDir = this.store.runDir(model.id, run.id);
     await mkdir(join(runDir, 'images'), { recursive: true });
-    const imagePaths: string[] = [];
-    for (const img of input.images) {
-      const p = join(runDir, 'images', `${img.name.replace(/[^\w.-]/g, '_')}.png`);
-      await writeFile(p, img.data);
-      imagePaths.push(p);
+    const shots: { name: string; path: string }[] = [];
+    const design = isDesignRun(run.kind);
+    // Designed pots keep attachments as reference images; other runs just pass them on.
+    const extra = design ? [] : (input.attachments ?? []);
+    for (const img of [...input.images, ...extra]) {
+      const name = `${img.name.replace(/[^\w.-]/g, '_')}.${img.ext}`;
+      await writeFile(join(runDir, 'images', name), img.data);
+      shots.push({ name, path: join(runDir, 'images', name) });
     }
-    const review = input.mode === 'review';
-    const imageNames = input.images.map((i) => i.name);
+    const review = run.kind === 'review';
     let ws: string;
     let prompt: string;
-    if (review) {
+    let schema: object = OUTPUT_SCHEMA;
+    let imagePaths = shots.map((s) => s.path);
+    if (design) {
+      let refs = model.design?.images ?? [];
+      const added = input.attachments?.length ? await this.designs.saveImages(model.id, refs, input.attachments) : [];
+      if (added.length) {
+        refs = [...refs, ...added];
+        model = await this.store.updateModel(model.id, { design: { images: refs } });
+      }
+      run.attachments = added;
+      ws = await this.designs.prepareWorkspace(model, ref);
+      await copyFile(this.designs.scriptPath(model.id), join(runDir, 'before.mjs'));
+      // A new session sees every reference image; feedback only the new ones (the rest are in refs/).
+      const refImages = run.kind === 'design' ? refs : added;
+      imagePaths = [...refImages.map((n) => join(this.designs.refsDir(model.id), n)), ...imagePaths];
+      const promptImages = [...refImages, ...shots.map((s) => s.name)].map((name) => ({ name }));
+      const failed = existsSync(join(ws, 'failed.mjs'))
+        ? `your last version did not build on the server (${model.design?.buildError ?? 'unknown error'}). It is saved as failed.mjs; design.mjs is the last version that built.`
+        : null;
+      prompt =
+        run.kind === 'design'
+          ? designPrompt(model, ref, input.message.trim() || model.design?.description || '', promptImages)
+          : designFeedbackPrompt(model, ref, input.message, promptImages, failed);
+      schema = DESIGN_SCHEMA;
+    } else if (review) {
       const prepared = await this.prepareReviewWorkspace(model, ref, runDir);
       ws = prepared.ws;
-      prompt = reviewPrompt(ref, model.fit, prepared.design, imageNames);
+      prompt = reviewPrompt(ref, model.fit, prepared.design, shots.map((s) => s.name.replace(/\.\w+$/, '')));
+      schema = REVIEW_SCHEMA;
     } else {
       ws = await this.prepareWorkspace(model, ref);
-      prompt = input.mode === 'fit' ? fitPrompt(model, ref, input.message, imageNames) : feedbackPrompt(model, ref, input.message, imageNames);
+      const names = shots.map((s) => s.name.replace(/\.\w+$/, ''));
+      prompt = run.kind === 'fit' ? fitPrompt(model, ref, input.message, names) : feedbackPrompt(model, ref, input.message, names);
     }
     const schemaPath = join(runDir, 'output-schema.json');
-    await writeFile(schemaPath, JSON.stringify(review ? REVIEW_SCHEMA : OUTPUT_SCHEMA, null, 2));
+    await writeFile(schemaPath, JSON.stringify(schema, null, 2));
     const lastPath = join(runDir, 'last-message.json');
     await writeFile(join(runDir, 'prompt.md'), prompt);
 
@@ -324,16 +392,16 @@ export class CodexRunner {
       ...imagePaths.flatMap((p) => ['-i', p]),
     ];
     // Reviews are one-off sessions that are never resumed, so don't keep them.
-    const args =
-      input.mode === 'feedback' && run.threadId
-        ? ['exec', 'resume', run.threadId, ...common, '--', prompt]
+    const resume = (run.kind === 'feedback' || run.kind === 'design-feedback') && run.threadId;
+    const args = resume
+        ? ['exec', 'resume', run.threadId!, ...common, '--', prompt]
         : ['exec', ...(review ? ['--ephemeral'] : []), ...common, '--', prompt];
 
     this.emit(a, { type: 'status', status: 'running' });
     this.emit(a, {
       type: 'log',
       level: 'info',
-      text: review ? 'Starting an independent review session' : input.mode === 'fit' ? 'Starting a new Codex session' : `Resuming Codex session ${run.threadId}`,
+      text: review ? 'Starting an independent review session' : resume ? `Resuming Codex session ${run.threadId}` : 'Starting a new Codex session',
     });
 
     const child = spawn(this.opts.bin, args, { cwd: ws, stdio: ['ignore', 'pipe', 'pipe'], env: process.env });
@@ -353,8 +421,9 @@ export class CodexRunner {
         case 'thread.started':
           run.threadId = String(ev.thread_id);
           this.emit(a, { type: 'thread', threadId: run.threadId });
-          // Only the fitting conversation is continued with feedback.
-          if (!review) void this.store.updateModel(model.id, { codexThreadId: run.threadId }).catch(() => undefined);
+          // Fitting and design conversations are continued with feedback; reviews aren't.
+          if (design) void this.store.updateModel(model.id, { design: { threadId: run.threadId } }).catch(() => undefined);
+          else if (!review) void this.store.updateModel(model.id, { codexThreadId: run.threadId }).catch(() => undefined);
           break;
         case 'item.started':
         case 'item.updated':
@@ -385,17 +454,19 @@ export class CodexRunner {
       void writeFile(join(runDir, 'stderr.log'), stderr.join('\n')).catch(() => undefined);
       // The fitted mesh can be rebuilt from the reviewed transform; don't keep a copy per review.
       if (review) void rm(join(ws, 'fitted.stl'), { force: true }).catch(() => undefined);
-      void this.complete(a, code, signal, lastPath, turnError, stderr);
+      void this.complete(a, code, signal, lastPath, turnError, stderr, runDir);
     });
   }
 
-  private async complete(a: ActiveRun, code: number | null, signal: NodeJS.Signals | null, lastPath: string, turnError: string | null, stderr: string[]) {
+  private async complete(a: ActiveRun, code: number | null, signal: NodeJS.Signals | null, lastPath: string, turnError: string | null, stderr: string[], runDir: string) {
+    if (isDesignRun(a.run.kind) && (a.cancelled || code !== 0)) await this.restoreScript(a.run.modelId, runDir);
     if (a.cancelled) return this.finish(a, { status: 'cancelled', error: null });
     if (code !== 0) {
       const tail = stderr.filter((l) => l.trim() && !/^Reading additional input/.test(l)).slice(-8).join('\n');
       return this.finish(a, { status: 'error', error: turnError ?? `Codex exited with ${signal ?? `code ${code}`}${tail ? `:\n${tail}` : ''}` });
     }
     try {
+      if (isDesignRun(a.run.kind)) return await this.completeDesign(a, await readFile(lastPath, 'utf8'), runDir);
       if (a.run.kind === 'review') {
         const review = parseReview(await readFile(lastPath, 'utf8'));
         const model = await this.store.getModel(a.run.modelId);
@@ -416,6 +487,30 @@ export class CodexRunner {
     } catch (e) {
       return this.finish(a, { status: 'error', error: (e as Error).message });
     }
+  }
+
+  /** Build the script Codex left; if it fails, put back the one that built. */
+  private async completeDesign(a: ActiveRun, text: string, runDir: string) {
+    const result = parseDesignResult(text);
+    const id = a.run.modelId;
+    const script = this.designs.scriptPath(id);
+    const failed = join(this.designs.dir(id), 'failed.mjs');
+    await copyFile(script, join(runDir, 'after.mjs')).catch(() => undefined);
+    let model: PotModel;
+    try {
+      // Codex was asked to make the user's values its defaults.
+      model = await this.designs.rebuild(id, { resetParams: true });
+    } catch (e) {
+      const msg = (e as Error).message;
+      await copyFile(script, failed).catch(() => undefined);
+      await copyFile(join(runDir, 'before.mjs'), script).catch(() => undefined);
+      await this.designs.recordError(id, msg);
+      return this.finish(a, { status: 'error', error: `Codex's design did not build: ${msg}`, design: result });
+    }
+    await rm(failed, { force: true });
+    if (result.title && model.name === DEFAULT_DESIGN_NAME) model = await this.store.updateModel(id, { name: result.title });
+    const report = model.design?.report ?? null;
+    return this.finish(a, { status: 'done', error: null, design: result, designReport: report, metrics: report?.metrics ?? null });
   }
 
   private async finish(a: ActiveRun, patch: Partial<CodexRun> & Pick<CodexRun, 'status' | 'error'>) {

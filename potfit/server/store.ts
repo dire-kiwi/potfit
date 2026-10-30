@@ -5,13 +5,15 @@
 //   models/<id>/model.json      PotModel
 //   models/<id>/mesh.stl        normalised binary STL (raw model coordinates)
 //   models/<id>/runs/<runId>/   run.json, events.jsonl, images, Codex output
-//   models/<id>/codex/          working directory Codex runs in (state.json, AGENTS.md, ...)
+//   models/<id>/codex/          working directory Codex fits in (state.json, AGENTS.md, ...)
+//   models/<id>/design/         designed pots: design.mjs, refs/ (the user's images), and
+//                               the design agent's working files
 
 import { randomUUID } from 'node:crypto';
 import { appendFile, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import type { CodexEvent, CodexRun, ModelPatch, PotModel, ReferenceInput, ReferencePot } from '../shared/types.ts';
+import type { CodexEvent, CodexRun, ModelPatch, PotDesign, PotModel, ReferenceInput, ReferencePot } from '../shared/types.ts';
 
 async function writeJson(file: string, value: unknown) {
   const tmp = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
@@ -118,9 +120,9 @@ export class Store {
     return m;
   }
 
-  async createModel(model: Omit<PotModel, 'id' | 'createdAt' | 'updatedAt'>, mesh: Uint8Array): Promise<PotModel> {
+  async createModel(model: Omit<PotModel, 'id' | 'createdAt' | 'updatedAt'>, mesh: Uint8Array, id: string = randomUUID()): Promise<PotModel> {
     const now = new Date().toISOString();
-    const m: PotModel = { ...model, id: randomUUID(), createdAt: now, updatedAt: now };
+    const m: PotModel = { ...model, id, createdAt: now, updatedAt: now };
     const dir = this.modelDir(m.id);
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, 'mesh.stl'), mesh);
@@ -128,11 +130,19 @@ export class Store {
     return m;
   }
 
-  updateModel(id: string, patch: ModelPatch & { codexThreadId?: string | null }): Promise<PotModel> {
+  /** `patch.design` is merged into a designed model's design; it is ignored for imported models. */
+  updateModel(id: string, patch: ModelPatch & Partial<Pick<PotModel, 'codexThreadId' | 'triangleCount'>> & { design?: Partial<PotDesign> }): Promise<PotModel> {
     const file = join(this.modelDir(id), 'model.json');
     return this.serial(file, async () => {
       const m = await this.getModel(id);
-      const next: PotModel = { ...m, ...patch, fit: { ...m.fit, ...patch.fit }, updatedAt: new Date().toISOString() };
+      const { design, ...rest } = patch;
+      const next: PotModel = {
+        ...m,
+        ...rest,
+        fit: { ...m.fit, ...patch.fit },
+        ...(m.design && design ? { design: { ...m.design, ...design } } : {}),
+        updatedAt: new Date().toISOString(),
+      };
       await writeJson(file, next);
       return next;
     });

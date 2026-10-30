@@ -88,9 +88,86 @@ export interface PotModel {
   fit: FitSettings;
   /** Codex thread used for this model's fit conversation, if any. */
   codexThreadId: string | null;
+  /** Set for pots designed in the app rather than imported (absent on older models). */
+  design?: PotDesign | null;
 }
 
 export type ModelPatch = Partial<Pick<PotModel, 'name' | 'transform' | 'fit'>>;
+
+// ------------------------------------------------------------------ designs
+
+/**
+ * A user-adjustable value a design script declares. The app shows a control
+ * for each and rebuilds the design when one changes.
+ */
+export type DesignParam =
+  | { type: 'number'; value: number; min: number | null; max: number | null; step: number | null; label: string; unit: string; help: string }
+  | { type: 'boolean'; value: boolean; label: string; help: string }
+  | { type: 'choice'; value: string; options: string[]; label: string; help: string };
+
+export type ParamValues = Record<string, number | boolean | string>;
+
+/** The reference pot and goals a design's cavity was built for. */
+export interface DesignTarget {
+  referenceId: string | null;
+  reference: { name: string; topOD: number; bottomOD: number; height: number };
+  clearance: number;
+  topOffset: number | null;
+  floorGap: number;
+}
+
+/** Overhang found on one part of a built design. */
+export interface OverhangSpot {
+  /** Downward-facing area steeper than 45° from vertical, mm². */
+  area: number;
+  /** Height range in the design frame (z up from the base), mm. */
+  zMin: number;
+  zMax: number;
+  /** Which side of the pot, e.g. "front (-y)". */
+  side: string;
+}
+
+/** What building a design script produced. */
+export interface DesignReport {
+  triangles: number;
+  /** Size of the printed part in the design frame (z is height), mm. */
+  size: Vec3;
+  /** Lowest point; the base should be at z = 0. */
+  minZ: number;
+  /** cm³ of material. */
+  volume: number;
+  /** Separate solid pieces; more than one means something is floating. */
+  components: number;
+  /** Total downward-facing area steeper than 45° from vertical, not counting the base, mm². */
+  overhangArea: number;
+  overhangs: OverhangSpot[];
+  /** Placement that sits the reference pot in the cavity at scale 1. */
+  placement: PotTransform;
+  /** The built pot measured against the reference pot it was built for. */
+  metrics: FitMetrics | null;
+  /** Lines the script added with note(). */
+  notes: string[];
+  warnings: string[];
+  buildMs: number;
+}
+
+export interface PotDesign {
+  /** What the user asked for when they created the design. */
+  description: string;
+  /** Reference images the user supplied (file names in the design's refs/ folder). */
+  images: string[];
+  /** Codex conversation that designs this pot. */
+  threadId: string | null;
+  /** Current parameter values and what the script declares. */
+  params: ParamValues;
+  paramSpec: Record<string, DesignParam>;
+  /** The last successful build, and what it was built for. */
+  report: DesignReport | null;
+  builtFor: DesignTarget | null;
+  builtAt: string | null;
+  /** Why the last build failed, if it did (the mesh is from the build before). */
+  buildError: string | null;
+}
 
 /** Measurements of a placed outer pot against a reference pot. */
 export interface FitMetrics {
@@ -173,12 +250,26 @@ export interface ReviewResult {
   feedbackForFitter: string;
 }
 
+/** What a design run reports, alongside the build of its script. */
+export interface DesignResult {
+  /** Short name for the design. */
+  title: string;
+  summary: string;
+  warnings: string[];
+  confidence: 'high' | 'medium' | 'low';
+}
+
+export type CodexRunKind = 'fit' | 'feedback' | 'review' | 'design' | 'design-feedback';
+
 export interface CodexRun {
   id: string;
   modelId: string;
-  /** fit and feedback change the placement; review only looks at it. */
-  kind: 'fit' | 'feedback' | 'review';
-  /** User instructions (fit) or feedback text; empty for reviews. */
+  /**
+   * fit and feedback change the placement; review only looks at it; design
+   * and design-feedback rewrite a designed pot's script and rebuild it.
+   */
+  kind: CodexRunKind;
+  /** User instructions (fit, design) or feedback text; empty for reviews. */
   message: string;
   status: CodexRunStatus;
   startedAt: string;
@@ -190,6 +281,12 @@ export interface CodexRun {
   result: CodexResult | null;
   /** Review runs only (absent on runs saved before reviews existed). */
   review?: ReviewResult | null;
+  /** Design runs only: Codex's answer, the build it produced, and the parameters before the run. */
+  design?: DesignResult | null;
+  designReport?: DesignReport | null;
+  paramsBefore?: ParamValues | null;
+  /** Reference images the user attached to this run. */
+  attachments?: string[];
   /** Server-side check of the result transform, or of the reviewed placement. */
   metrics: FitMetrics | null;
   error: string | null;

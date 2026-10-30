@@ -13,7 +13,7 @@ import {
   type Frustum,
   type Profile,
 } from './profile.ts';
-import { applyTransform, computeBounds, type Bounds } from './transform.ts';
+import { anchorFor, applyTransform, computeBounds, type Bounds } from './transform.ts';
 import {
   UP_AXES,
   type FitMetrics,
@@ -187,6 +187,29 @@ export function initialTransform(positions: Float32Array, a: MeshAnalysis): PotT
     position: { x: -c.x, y: -(a.floorTop ?? 0), z: -c.z },
     scale: { x: 1, y: 1, z: 1 },
   };
+}
+
+/**
+ * Placement for a pot built in the design frame (+Z up, the pot's axis on
+ * x = y = 0): scale 1, the design's axis on the reference axis, and the
+ * reference pot standing where it comes to rest when lowered in, on the floor
+ * plus floorGap or on the walls if they stop it first.
+ */
+export function placeDesign(positions: Float32Array, ref: ReferenceDims, fit: Pick<FitSettings, 'clearance' | 'floorGap'>, raw?: Bounds): PotTransform {
+  const bounds = raw ?? computeBounds(positions);
+  // Positioning the anchor at itself leaves the mesh where the up rotation puts it.
+  const anchor = anchorFor(bounds, '+Z');
+  const t: PotTransform = { up: '+Z', spin: 0, position: anchor, scale: { x: 1, y: 1, z: 1 } };
+  const world = applyTransform(positions, t, bounds);
+  const b = computeBounds(world);
+  const profile = sliceProfile(world, gridFor(b.min.y, b.max.y, 0.1));
+  const floor = findFloor(profile);
+  // Designs leave exactly the clearance, so the walls touch the clearance
+  // envelope along its length; a few microns of slack stop float rounding
+  // from catching the nursery pot on them.
+  const walls = descentSeat(profile, frustumOf(ref), fit.clearance / 2 - 0.005).seat;
+  const base = Math.max(walls, (floor ? floor.top : b.min.y) + fit.floorGap);
+  return { ...t, position: { x: anchor.x, y: anchor.y - base, z: anchor.z } };
 }
 
 // ---------------------------------------------------------------- checking

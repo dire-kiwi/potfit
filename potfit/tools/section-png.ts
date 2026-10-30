@@ -48,23 +48,28 @@ class Canvas {
     }
   }
   png(): Buffer {
-    const raw = Buffer.alloc((this.w * 3 + 1) * this.h);
-    for (let y = 0; y < this.h; y++) {
-      raw[y * (this.w * 3 + 1)] = 0;
-      raw.set(this.data.subarray(y * this.w * 3, (y + 1) * this.w * 3), y * (this.w * 3 + 1) + 1);
-    }
-    const ihdr = Buffer.alloc(13);
-    ihdr.writeUInt32BE(this.w, 0);
-    ihdr.writeUInt32BE(this.h, 4);
-    ihdr[8] = 8; // bit depth
-    ihdr[9] = 2; // RGB
-    return Buffer.concat([
-      Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
-      chunk('IHDR', ihdr),
-      chunk('IDAT', deflateSync(raw)),
-      chunk('IEND', Buffer.alloc(0)),
-    ]);
+    return encodePNG(this.data, this.w, this.h);
   }
+}
+
+/** Encode 8-bit RGB pixels, row by row from the top, as a PNG. */
+export function encodePNG(rgb: Uint8Array, w: number, h: number): Buffer {
+  const raw = Buffer.alloc((w * 3 + 1) * h);
+  for (let y = 0; y < h; y++) {
+    raw[y * (w * 3 + 1)] = 0;
+    raw.set(rgb.subarray(y * w * 3, (y + 1) * w * 3), y * (w * 3 + 1) + 1);
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 2; // RGB
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', deflateSync(raw)),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
 }
 
 const CRC_TABLE = (() => {

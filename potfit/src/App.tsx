@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { parseSTL, writeBinarySTL } from '../shared/stl.ts';
 import { cloneTransform, transformsEqual } from '../shared/transform.ts';
-import type { CodexEvent, CodexRun, FitMetrics, FitSettings, PotModel, PotTransform, ReferencePot, ServerStatus } from '../shared/types.ts';
+import type { CodexEvent, CodexRun, FitMetrics, FitSettings, ParamValues, PotModel, PotTransform, ReferencePot, ServerStatus } from '../shared/types.ts';
 import { api, type ModelPatchBody } from './api.ts';
 import { CodexPanel } from './components/CodexPanel.tsx';
+import { DesignDialog } from './components/DesignDialog.tsx';
+import { DesignPanel } from './components/DesignPanel.tsx';
 import { FitPanel } from './components/FitPanel.tsx';
+import type { PickedImage } from './components/ImagePicker.tsx';
 import { ImportDialog, type PendingImport } from './components/ImportDialog.tsx';
 import { ModelList } from './components/ModelList.tsx';
 import { ReferencePanel } from './components/ReferencePanel.tsx';
@@ -48,6 +51,8 @@ export function App() {
   const [instructionsDraft, setInstructionsDraft] = useState('');
   const [feedbackDraft, setFeedbackDraft] = useState('');
   const [pendingImport, setPendingImport] = useState<PendingImport | null>(null);
+  const [designing, setDesigning] = useState(false);
+  const [building, setBuilding] = useState(false);
   const [gizmo, setGizmo] = useState<GizmoMode>('translate');
   const [scaleLock, setScaleLock] = useState<ScaleLock>('uniform');
   const [sectionAngle, setSectionAngle] = useState(0);
@@ -75,7 +80,7 @@ export function App() {
   const reviewRuns = runs.filter((r) => r.kind === 'review');
   const fitActive = activeRun && activeRun.kind !== 'review' ? activeRun : null;
   const reviewActive = activeRun && activeRun.kind === 'review' ? activeRun : null;
-  const locked = !!fitActive;
+  const locked = !!fitActive || building;
 
   const fail = (e: unknown) => setError((e as Error).message ?? String(e));
 
@@ -197,6 +202,26 @@ export function App() {
     return () => geometry.dispose();
   }, [geometry]);
 
+  /** Show a rebuilt model: its new mesh and placement. Undo history is for the old mesh, so it goes. */
+  const showRebuilt = useCallback(
+    async (m: PotModel) => {
+      setModels((ms) => ms.map((x) => (x.id === m.id ? m : x)));
+      if (modelRef.current?.id !== m.id) return;
+      const res = await fetch(api.meshUrl(m.id));
+      if (!res.ok) throw new Error(`Could not load the mesh (${res.status})`);
+      const pos = parseSTL(await res.arrayBuffer());
+      if (modelRef.current?.id !== m.id) return;
+      meshReady.current = geometry.load(pos);
+      setModel(m);
+      setPositions(pos);
+      viewer.current?.setMesh(pos);
+      viewer.current?.setTransform(m.transform);
+      history.current = { past: [], future: [] };
+      bumpHistory();
+    },
+    [geometry],
+  );
+
   const subscribe = useCallback((modelId: string, run: CodexRun) => {
     unsubscribe.current?.();
     setLogs((l) => ({ ...l, [run.id]: [] }));
@@ -213,6 +238,14 @@ export function App() {
           // it during the review (possibly with a save still pending), so the
           // server's copy must not overwrite what's on screen.
           if (finished.kind === 'review') return;
+          // A design run rebuilt the mesh (or recorded why it couldn't).
+          if (finished.kind === 'design' || finished.kind === 'design-feedback') {
+            api
+              .model(modelId)
+              .then(({ model: m }) => showRebuilt(m))
+              .catch(fail);
+            return;
+          }
           if (finished.status === 'done' && finished.result && modelRef.current?.id === modelId) {
             setTransform(finished.result.transform, { record: finished.transformBefore, save: false });
           }
@@ -224,7 +257,7 @@ export function App() {
       },
       () => undefined,
     );
-  }, [setTransform]);
+  }, [setTransform, showRebuilt]);
 
   useEffect(() => {
     unsubscribe.current?.();
@@ -406,7 +439,7 @@ export function App() {
     }
   };
 
-  const startCodex = async (mode: CodexRun['kind'], message: string) => {
+  const startCodex = async (mode: CodexRun['kind'], message: string, attachments: PickedImage[] = []) => {
     if (!model || !viewer.current) return;
     await flushSave();
     const shots = viewer.current.capture();
@@ -417,6 +450,7 @@ export function App() {
         { name: 'section', dataUrl: shots.section },
         { name: 'view', dataUrl: shots.view },
       ],
+      attachments: attachments.map((a) => ({ name: a.name, dataUrl: a.dataUrl })),
     });
     if (run.status === 'running') {
       setActiveRun(run);
@@ -424,6 +458,49 @@ export function App() {
     } else {
       setRuns((rs) => [...rs, run]);
       if (run.error) throw new Error(run.error);
+    }
+  };
+
+  /** Rebuild the design (new values, a new script, or the current fit settings). Throws on failure. */
+  const buildDesign = async (body: { params?: ParamValues; script?: string }) => {
+    const m = modelRef.current;
+    if (!m) return;
+    setBuilding(true);
+    try {
+      // The server builds for the fit settings it has.
+      await flushSave();
+      await showRebuilt(await api.buildDesign(m.id, body));
+    } catch (e) {
+      // A failed rebuild is recorded on the model; show that too.
+      api
+        .model(m.id)
+        .then(({ model: fresh }) => {
+          if (modelRef.current?.id === fresh.id) setModel((cur) => (cur ? { ...cur, design: fresh.design } : cur));
+        })
+        .catch(() => undefined);
+      throw e;
+    } finally {
+      setBuilding(false);
+    }
+  };
+
+  const revertRun = async (run: CodexRun) => {
+    if (!model) return;
+    if (run.kind === 'design' || run.kind === 'design-feedback') {
+      setBuilding(true);
+      try {
+        await showRebuilt(await api.revertDesign(model.id, run.id));
+      } catch (e) {
+        fail(e);
+      } finally {
+        setBuilding(false);
+      }
+      return;
+    }
+    editTransform(run.transformBefore);
+    if (run.fitBefore) {
+      const { referenceId: _ref, ...goals } = run.fitBefore;
+      updateFit(goals);
     }
   };
 
@@ -446,6 +523,35 @@ export function App() {
     );
   };
 
+  const codexPanel = model && (
+    <CodexPanel
+      status={status}
+      model={model}
+      hasReference={!!reference}
+      activeRun={fitActive}
+      reviewRunning={!!reviewActive}
+      runs={fitRuns}
+      logs={logs}
+      instructions={instructionsDraft}
+      feedback={feedbackDraft}
+      onInstructions={setInstructionsDraft}
+      onFeedback={setFeedbackDraft}
+      onStart={startCodex}
+      onCancel={() => api.cancelRun(model.id).catch(fail)}
+      onRate={rateRun}
+      onRevert={revertRun}
+      onLoadLog={loadLog}
+      onNewSession={async () => {
+        try {
+          const saved = await api.patchModel(model.id, { resetCodex: true });
+          setModel({ ...model, codexThreadId: saved.codexThreadId, design: saved.design });
+        } catch (e) {
+          fail(e);
+        }
+      }}
+    />
+  );
+
   return (
     <div className="app">
       <aside className="sidebar left">
@@ -462,6 +568,7 @@ export function App() {
             setSelectedId(id);
           }}
           onFiles={onFiles}
+          onNewDesign={() => setDesigning(true)}
           onRename={async (id, name) => {
             try {
               const saved = await api.patchModel(id, { name });
@@ -542,13 +649,17 @@ export function App() {
               <span className="sw cut" /> cut wall <span className="sw ref" /> reference pot <span className="sw env" /> required clearance
             </div>
           </div>
-          {!model && !busy && <div className="empty">Import a pot model, or pick one on the left.</div>}
+          {!model && !busy && <div className="empty">Import a pot model, design a new one, or pick one on the left.</div>}
         </div>
       </main>
 
       <aside className="sidebar right">
         {model ? (
           <>
+            {model.design && (
+              <DesignPanel key={model.id} model={model} references={references} lockedBy={activeRun?.kind ?? null} building={building} onBuild={buildDesign} />
+            )}
+            {model.design && codexPanel}
             <FitPanel
               model={model}
               references={references}
@@ -568,38 +679,7 @@ export function App() {
               onRedo={redo}
               exportUrl={api.exportUrl(model.id)}
             />
-            <CodexPanel
-              status={status}
-              model={model}
-              hasReference={!!reference}
-              activeRun={fitActive}
-              reviewRunning={!!reviewActive}
-              runs={fitRuns}
-              logs={logs}
-              instructions={instructionsDraft}
-              feedback={feedbackDraft}
-              onInstructions={setInstructionsDraft}
-              onFeedback={setFeedbackDraft}
-              onStart={startCodex}
-              onCancel={() => model && api.cancelRun(model.id).catch(fail)}
-              onRate={rateRun}
-              onRevert={(run) => {
-                editTransform(run.transformBefore);
-                if (run.fitBefore) {
-                  const { referenceId: _ref, ...goals } = run.fitBefore;
-                  updateFit(goals);
-                }
-              }}
-              onLoadLog={loadLog}
-              onNewSession={async () => {
-                try {
-                  const saved = await api.patchModel(model.id, { resetCodex: true });
-                  setModel({ ...model, codexThreadId: saved.codexThreadId });
-                } catch (e) {
-                  fail(e);
-                }
-              }}
-            />
+            {!model.design && codexPanel}
             <ReviewPanel
               status={status}
               model={model}
@@ -612,9 +692,9 @@ export function App() {
               onCancel={() => api.cancelRun(model.id).catch(fail)}
               onLoadLog={loadLog}
               onUseFeedback={(text) => {
-                // Feedback continues the fitting conversation; without one, it
-                // becomes the instructions for a new fit.
-                if (model.codexThreadId) setFeedbackDraft(text);
+                // Feedback continues the fitting (or design) conversation;
+                // without one, it becomes the instructions for a new session.
+                if (model.design ? model.design.threadId : model.codexThreadId) setFeedbackDraft(text);
                 else setInstructionsDraft(text);
                 document.querySelector('.panel.codex')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
               }}
@@ -627,6 +707,21 @@ export function App() {
         )}
       </aside>
 
+      {designing && (
+        <DesignDialog
+          references={references}
+          referenceId={model?.fit.referenceId ?? null}
+          codexAvailable={status?.codex.available ?? false}
+          onCancel={() => setDesigning(false)}
+          onCreated={async (m) => {
+            setDesigning(false);
+            await flushSave();
+            setModels(await api.models().catch(() => [m]));
+            // Loading the model picks up the design run and streams it.
+            setSelectedId(m.id);
+          }}
+        />
+      )}
       {pendingImport && (
         <ImportDialog
           pending={pendingImport}

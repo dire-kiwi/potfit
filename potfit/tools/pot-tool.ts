@@ -2,13 +2,15 @@
 // pot-tool: measuring and fitting helpers for the Codex fit agent (and humans).
 // Run `node tools/pot-tool.ts help` for usage.
 
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, join, relative, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { analyzeMesh, checkFit, solveFit, type ReferenceDims } from '../shared/fit.ts';
-import { parseSTL } from '../shared/stl.ts';
-import { anchorFor, applyTransform, computeBounds, validateTransform } from '../shared/transform.ts';
-import { DEFAULT_FIT, type FitMetrics, type FitSettings, type PotTransform, type ScaleMode, type UpAxis } from '../shared/types.ts';
+import { analyzeMesh, checkFit, placeDesign, solveFit, type ReferenceDims } from '../shared/fit.ts';
+import { parseSTL, writeBinarySTL } from '../shared/stl.ts';
+import { anchorFor, applyTransform, computeBounds, validateTransform, type Bounds } from '../shared/transform.ts';
+import { DEFAULT_FIT, type FitMetrics, type FitSettings, type ParamValues, type PotTransform, type ScaleMode, type UpAxis } from '../shared/types.ts';
+import { buildDesign, formatReport } from './design-build.ts';
+import { renderViews, type ViewAngle } from './render3d.ts';
 import { renderSection } from './section-png.ts';
 
 const USAGE = `pot-tool <command> [options]
@@ -18,11 +20,15 @@ Commands
   solve     Deterministic fit: scale and place the pot around the reference pot
   check     Measure a transform against the reference pot (gaps, rim offset, floor)
   render    Draw a side-on section of a transform as a PNG
+  build     Design workspaces: run the design script and report on the result
+  preview   Design workspaces: shaded views of the last build, and its section
 
 Inputs default to ./state.json, which holds the mesh path, reference pot, fit
 settings and the transform currently shown in the app. When state.json has
 "placed": true (a review workspace), the mesh is already in the pot frame and
-check and render measure it as it is.
+check and render measure it as it is. In a design workspace ("frame":
+"design") the mesh is the last build, and check and render place it the way
+the app will: scale 1, the reference pot lowered into the cavity.
 
 Options
   --state <file>         state file (default ./state.json)
@@ -35,7 +41,11 @@ Options
   --top-offset <mm|none> reference rim height above the outer rim (default: state.fit.topOffset)
   --floor-gap <mm>       gap under the reference pot (default: state.fit.floorGap)
   --angle <deg>          render: section plane angle about the vertical axis (default 0)
-  --out <file>           render: output PNG (default section.png)
+  --out <path>           render/preview: output PNG (default section.png / out/preview.png);
+                         build: output directory (default state.design.out)
+  --script <file>        build: design script (default state.design.script)
+  --params <json>        build: parameter values to try, over state.params
+  --view <az,el>         preview: one large view from this azimuth and elevation (degrees)
   --json                 print JSON instead of text
 `;
 
@@ -43,6 +53,10 @@ interface State {
   mesh?: string;
   /** The mesh is already placed in the pot frame (review workspaces). */
   placed?: boolean;
+  /** The mesh is a design build: +Z up, the pot's axis on x = y = 0 (design workspaces). */
+  frame?: 'design';
+  design?: { script: string; out: string };
+  params?: ParamValues;
   reference?: (ReferenceDims & { name?: string }) | null;
   fit?: Partial<FitSettings>;
   transform?: PotTransform;
@@ -67,6 +81,9 @@ const { positionals, values } = parseArgs({
     'floor-gap': { type: 'string' },
     angle: { type: 'string' },
     out: { type: 'string' },
+    script: { type: 'string' },
+    params: { type: 'string' },
+    view: { type: 'string' },
     json: { type: 'boolean', default: false },
     help: { type: 'boolean', short: 'h', default: false },
   },
@@ -80,9 +97,19 @@ if (values.help || command === 'help') {
 
 const statePath = resolve(values.state ?? 'state.json');
 const state: State = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : {};
-const meshPath = values.mesh ? resolve(values.mesh) : state.mesh ? resolve(dirname(statePath), state.mesh) : fail('no mesh: pass --mesh or provide state.json');
-const positions = parseSTL(readFileSync(meshPath));
-const raw = computeBounds(positions);
+const here = (p: string) => resolve(dirname(statePath), p);
+
+// Loaded on first use: build runs before there is a mesh.
+let mesh: { positions: Float32Array; raw: Bounds } | null = null;
+function loadMesh() {
+  if (!mesh) {
+    const path = values.mesh ? resolve(values.mesh) : state.mesh ? here(state.mesh) : fail('no mesh: pass --mesh or provide state.json');
+    if (!existsSync(path)) fail(`${path} does not exist${state.frame === 'design' ? '; run ./pot-tool build first' : ''}`);
+    const positions = parseSTL(readFileSync(path));
+    mesh = { positions, raw: computeBounds(positions) };
+  }
+  return mesh;
+}
 
 const num = (v: string | undefined, name: string): number | undefined => {
   if (v === undefined) return undefined;
@@ -114,11 +141,17 @@ function reference(): ReferenceDims & { name?: string } {
 
 /** The transform that leaves a mesh where it is: +Y up, scale 1, anchor unchanged. */
 function asPlaced(): PotTransform {
-  return { up: '+Y', spin: 0, position: anchorFor(raw, '+Y'), scale: { x: 1, y: 1, z: 1 } };
+  return { up: '+Y', spin: 0, position: anchorFor(loadMesh().raw, '+Y'), scale: { x: 1, y: 1, z: 1 } };
+}
+
+function defaultTransform(): unknown {
+  if (state.placed) return asPlaced();
+  if (state.frame === 'design') return placeDesign(loadMesh().positions, reference(), fitSettings(), loadMesh().raw);
+  return state.transform;
 }
 
 function transformArg(): PotTransform {
-  let t: unknown = state.placed ? asPlaced() : state.transform;
+  let t: unknown = defaultTransform();
   if (values.transform !== undefined) {
     const src = values.transform.trim();
     t = JSON.parse(src.startsWith('{') ? src : readFileSync(resolve(src), 'utf8'));
@@ -160,9 +193,38 @@ function out(json: unknown, text: string) {
   process.stdout.write(values.json ? JSON.stringify(json, null, 2) + '\n' : text + '\n');
 }
 
+/** Build the design script into outDir/design.stl and report.json. */
+async function runBuild(script: string, outDir: string, params: ParamValues) {
+  const fit = fitSettings();
+  let result;
+  try {
+    result = await buildDesign(script, { reference: reference(), fit: { clearance: fit.clearance, topOffset: fit.topOffset, floorGap: fit.floorGap }, params });
+  } catch (e) {
+    fail((e as Error).message);
+  }
+  mkdirSync(outDir, { recursive: true });
+  const stl = join(outDir, 'design.stl');
+  writeFileSync(stl, writeBinarySTL(result.positions, 'potfit design'));
+  writeFileSync(join(outDir, 'report.json'), JSON.stringify({ report: result.report, paramSpec: result.paramSpec, params: result.params }, null, 2));
+  return { result, stl };
+}
+
+// In a design workspace, measuring or previewing a stale build would show the
+// old design, so rebuild first when the script is newer than the last build.
+if (state.frame === 'design' && state.design && !values.mesh && ['analyze', 'solve', 'check', 'render', 'preview'].includes(command)) {
+  const script = here(state.design.script);
+  const stl = here(join(state.design.out, 'design.stl'));
+  if (existsSync(script) && (!existsSync(stl) || statSync(stl).mtimeMs < statSync(script).mtimeMs)) {
+    process.stderr.write(`${state.design.script} has changed since the last build; building it first.\n\n`);
+    const { result } = await runBuild(script, here(state.design.out), state.params ?? {});
+    process.stderr.write(`${formatReport(result)}\n\n`);
+  }
+}
+
 switch (command) {
   case 'analyze': {
-    const a = analyzeMesh(positions, state.transform?.up);
+    const { positions } = loadMesh();
+    const a = analyzeMesh(positions, state.frame === 'design' ? '+Z' : state.transform?.up);
     const text = [
       `triangles             ${a.triangleCount}`,
       `raw bounds            x ${f2(a.rawBounds.min.x)}..${f2(a.rawBounds.max.x)}  y ${f2(a.rawBounds.min.y)}..${f2(a.rawBounds.max.y)}  z ${f2(a.rawBounds.min.z)}..${f2(a.rawBounds.max.z)}`,
@@ -189,8 +251,9 @@ switch (command) {
   case 'solve': {
     const fit = fitSettings();
     const ref = reference();
+    const { positions, raw } = loadMesh();
     if (state.placed) process.stderr.write('note: this mesh is already placed, so solve reports scales relative to the current fit\n');
-    const up = (values.up ?? state.transform?.up ?? analyzeMesh(positions).suggestedUp) as UpAxis;
+    const up = (values.up ?? state.transform?.up ?? (state.frame === 'design' ? '+Z' : analyzeMesh(positions).suggestedUp)) as UpAxis;
     if (!['+X', '-X', '+Y', '-Y', '+Z', '-Z'].includes(up)) fail('--up must be one of +X -X +Y -Y +Z -Z');
     const spin = num(values.spin, 'spin') ?? state.transform?.spin ?? 0;
     let result;
@@ -216,6 +279,7 @@ switch (command) {
   case 'check': {
     const fit = fitSettings();
     const t = transformArg();
+    const { positions, raw } = loadMesh();
     const metrics = checkFit(positions, t, reference(), fit, raw);
     out(metrics, `transform ${formatTransform(t)}\n\n${formatMetrics(metrics, fit)}`);
     break;
@@ -225,6 +289,7 @@ switch (command) {
     const t = transformArg();
     const angle = num(values.angle, 'angle') ?? 0;
     const file = resolve(values.out ?? 'section.png');
+    const { positions, raw } = loadMesh();
     const img = renderSection(applyTransform(positions, t, raw), state.reference ?? null, { angle, radialClear: fit.clearance / 2 });
     writeFileSync(file, img.png);
     const b = img.bounds;
@@ -235,6 +300,53 @@ switch (command) {
         'grey fill: outer pot cut faces; red: reference pot; dashed orange: required clearance; dashed blue: reference axis; light grid: 10 mm.',
       ].join('\n'),
     );
+    break;
+  }
+  case 'build': {
+    const d = state.design ?? fail('state.json has no design section; build only works in a design workspace');
+    const script = values.script ? resolve(values.script) : here(d.script);
+    const outDir = values.out ? resolve(values.out) : here(d.out);
+    let params: ParamValues = state.params ?? {};
+    if (values.params) {
+      try {
+        params = { ...params, ...JSON.parse(values.params) };
+      } catch {
+        fail('--params must be a JSON object');
+      }
+    }
+    const { result, stl } = await runBuild(script, outDir, params);
+    out(
+      { report: result.report, paramSpec: result.paramSpec, params: result.params, stl },
+      `${formatReport(result)}\n\nwrote ${relative(process.cwd(), stl) || stl}; look at it with ./pot-tool preview`,
+    );
+    break;
+  }
+  case 'preview': {
+    const { positions, raw } = loadMesh();
+    const file = resolve(values.out ?? (state.design ? here(join(state.design.out, 'preview.png')) : 'preview.png'));
+    let views: ViewAngle[] | undefined;
+    if (values.view) {
+      const [azimuth, elevation] = values.view.split(',').map(Number);
+      if (!Number.isFinite(azimuth) || !Number.isFinite(elevation)) fail('--view must be azimuth,elevation in degrees');
+      views = [{ azimuth, elevation }];
+    }
+    const img = renderViews(positions, views ? { views, tile: 900, columns: 1 } : {});
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, img.png);
+    const lines = [
+      `wrote ${file} (${img.width}x${img.height} px)`,
+      views
+        ? `one view from azimuth ${views[0].azimuth}°, elevation ${views[0].elevation}° (azimuth 0 looks at the front from -y, -90 at the right side from +x)`
+        : 'top left: front (from -y); top right: right side (from +x); bottom left: three-quarter from front right, above; bottom right: top down, front at the bottom.',
+    ];
+    if (!views && state.reference) {
+      const fit = fitSettings();
+      const t = transformArg();
+      const sectionFile = join(dirname(file), 'section.png');
+      writeFileSync(sectionFile, renderSection(applyTransform(positions, t, raw), state.reference, { radialClear: fit.clearance / 2 }).png);
+      lines.push(`wrote ${sectionFile}: side-on section through the front and back with the nursery pot (red) and required clearance (dashed orange)`);
+    }
+    out({ file }, lines.join('\n'));
     break;
   }
   default:

@@ -5,7 +5,9 @@ they fit the nursery pot that actually holds the plant. You save reference
 pots by their top OD, bottom OD and height. You import a model, and Codex
 aligns and scales it around the reference pot. Then you review the result in a
 3D view and a side-on section view, and either send Codex feedback or move and
-scale the pot by hand. The fitted model exports as an STL ready for a slicer.
+scale the pot by hand. You can also have Codex design a new pot from a
+description, reference pictures or both, built around the nursery pot from
+the start. Either way the result exports as an STL ready for a slicer.
 
 ## Running it
 
@@ -81,6 +83,31 @@ address only on a network you trust; the host-name check is then switched off.
    the 3D view.
 9. **Export STL** downloads the placed model, Z up and standing on z = 0.
 
+### Designing a pot from scratch
+
+1. **+ Design** (left) opens the new design dialog. Describe the pot, add
+   reference images (pick, drop or paste them: photos of pots, characters,
+   sketches), choose the nursery pot and the fit goals. Images are resized to
+   at most 1600 px and sent as JPEG.
+2. The new model starts as a plain pot built around the nursery pot, and
+   Codex redesigns it. Its progress streams into the **Codex designer** panel;
+   when it finishes, the new design replaces the plain pot.
+3. The **Design** panel shows the settings Codex exposed (wall, twist, number
+   of lobes, ears on or off, and so on). Changing one rebuilds the pot in a
+   second or two. The panel also shows the size, the material, overhangs that
+   would need supports and whether the pot is one solid piece.
+4. **Feedback** continues the design conversation, with screenshots of both
+   views and any images you attach ("make the ears like this"). *Revert* on a
+   result goes back to the design from before that run.
+5. If you change the nursery pot or the fit goals, the Design panel offers to
+   rebuild the cavity for them. The design itself keeps its size.
+6. *Design script* shows the script behind the design. You can edit it and
+   rebuild; an edit that doesn't build is refused and the old script stays.
+
+Unticking *Design it with Codex* gives you the plain starter pot to adjust by
+hand. Review, manual moves, measurements and export work the same as for
+imported models.
+
 Measurements update live as you edit: narrowest radial gap and its height,
 rim offset, floor gap, whether the reference pot passes through the wall,
 thinnest wall and floor thickness after scaling (amber under 1.2 mm, red under
@@ -115,6 +142,48 @@ check` and `render` measure the mesh as it is. A review is a one-off
 the fitting thread or the placement. The server re-measures the reviewed
 placement for the record.
 
+## How the Codex design works
+
+A designed pot is a JavaScript module, `design.mjs`, that returns a solid
+built with [manifold-3d](https://github.com/elalish/manifold), whose booleans
+always give watertight meshes. It gets a toolkit (`tools/potlib.ts`):
+
+- `pot.layout({ floor })`: where the nursery pot sits, the rim height that
+  meets the rim-offset goal, the cavity radius needed at each height, the
+  cavity itself (subtracted last, so decorations can't intrude), and drainage
+  holes.
+- `lib`: lathes from smooth profiles, radial bodies `r(angle, z)` for
+  twisted, faceted, lobed and ribbed shapes, spheres, boxes, capsules, tubes
+  along paths, tori, mirrored pairs, and meshing a signed distance function,
+  which blends parts with fillets like a sculpt.
+- `params`: the settings the Design panel shows.
+
+The design frame is millimetres, +Z up, the base on z = 0 and the nursery
+pot's axis on x = y = 0, with the front facing -Y. The server places the built
+mesh at scale 1 with the nursery pot lowered into the cavity until it rests.
+
+Codex works in `data/models/<id>/design/`, which holds `design.mjs`, `refs/`
+(the user's images), `state.json`, an `AGENTS.md` describing the toolkit and
+printing rules, and `pot-tool`, with two extra commands:
+
+- `build` runs the script and reports the size, material, pieces, overhangs
+  steeper than 45° (by height and side) and the fit around the nursery pot.
+- `preview` renders four shaded views (front, side, three-quarter, top) and
+  the section as PNGs, which Codex looks at to compare with the references.
+  It (like `check` and `render`) rebuilds first if the script has changed
+  since the last build, so it never shows a stale design.
+
+When Codex finishes, the server builds the script itself and makes it the
+model's mesh; if it fails, the previous script is put back and Codex's version
+is kept as `failed.mjs` for the next turn. Each run keeps the script from
+before and after it under `runs/<runId>/`.
+
+The server runs design scripts in a child Node process under the permission
+model (`--permission`). The script can read only the build code, manifold-3d
+and itself, write only its output directory, and has no network,
+subprocesses, workers or environment variables. A build is stopped after
+two minutes.
+
 `pot-tool` works on its own too:
 
 ```sh
@@ -143,6 +212,9 @@ clearance) or the floor stop it. It then bisects on scale to meet the rim and
 floor goals. All of this is in `shared/` and runs in the browser (in a web
 worker), the server and `pot-tool` alike.
 
+A designed pot is measured the same way. Its cavity is the nursery pot plus
+the clearance, so at scale 1 the narrowest gap is exactly the clearance.
+
 Two checks against the designs in this repo: `cactus_pot_v3.stl` and
 `cactus_pot_v4.stl` were built for a 60/40 × 55 mm nursery pot with 5 mm
 clearance, standing 8 mm proud. The solver gives scale 1.000 for both.
@@ -151,8 +223,8 @@ clearance, standing 8 mm proud. The solver gives scale 1.000 for both.
 
 ```
 shared/   types, transforms, STL I/O, slicing, analysis, check and solver
-server/   Express API, file store, Codex runner and prompts
-tools/    pot-tool CLI and the PNG section renderer
+server/   Express API, file store, designs, Codex runner and prompts
+tools/    pot-tool CLI, PNG renderers, the design toolkit (potlib.ts), build and starter script
 src/      React UI, three.js viewer (viewer/PotViewer.ts), importers, worker
 test/     node --test suites (npm test)
 ```

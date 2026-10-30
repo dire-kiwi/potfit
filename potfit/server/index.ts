@@ -6,8 +6,9 @@ import { fileURLToPath } from 'node:url';
 import { analyzeMesh, initialTransform } from '../shared/fit.ts';
 import { parseSTL, writeBinarySTL } from '../shared/stl.ts';
 import { applyTransform, computeBounds, validateTransform, yUpToZUp } from '../shared/transform.ts';
-import { DEFAULT_FIT, type FitSettings, type ModelPatch, type ReferenceInput, type ServerStatus } from '../shared/types.ts';
+import { DEFAULT_FIT, type CodexRunKind, type FitSettings, type ModelPatch, type ParamValues, type ReferenceInput, type ServerStatus } from '../shared/types.ts';
 import { BadRequest, CodexRunner, Conflict, codexVersion } from './codex.ts';
+import { BuildError, DEFAULT_DESIGN_NAME, Designs, type DesignImage } from './design.ts';
 import { NotFound, Store } from './store.ts';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -22,10 +23,12 @@ const codexBin = process.env.POTFIT_CODEX_BIN ?? 'codex';
 
 const store = new Store(dataDir);
 await store.init();
-const codex = new CodexRunner(store, {
+const toolPath = join(root, 'tools', 'pot-tool.ts');
+const designs = new Designs(store, { root, toolPath });
+const codex = new CodexRunner(store, designs, {
   bin: codexBin,
   model: process.env.POTFIT_CODEX_MODEL || null,
-  toolPath: join(root, 'tools', 'pot-tool.ts'),
+  toolPath,
 });
 await codex.recover();
 
@@ -85,6 +88,34 @@ function fitPatch(v: unknown): Partial<FitSettings> {
   return out;
 }
 
+/** Screenshots and reference images arrive as PNG, JPEG or WebP data URLs. */
+function decodeImages(v: unknown, max: number): DesignImage[] {
+  if (v === undefined || v === null) return [];
+  if (!Array.isArray(v)) throw new BadRequest('images must be an array');
+  if (v.length > max) throw new BadRequest(`At most ${max} images at a time`);
+  return v.map((img: { name?: unknown; dataUrl?: unknown }, i) => {
+    const m = typeof img?.dataUrl === 'string' ? /^data:image\/(png|jpeg|webp);base64,(.+)$/.exec(img.dataUrl) : null;
+    if (!m) throw new BadRequest('images must be PNG, JPEG or WebP data URLs');
+    return {
+      name: typeof img.name === 'string' && img.name.trim() ? img.name.trim() : `image-${i + 1}`,
+      ext: m[1] === 'jpeg' ? 'jpg' : (m[1] as 'png' | 'webp'),
+      data: Buffer.from(m[2], 'base64'),
+    };
+  });
+}
+
+/** The reference pot used most recently, else the newest one. */
+async function defaultReferenceId(): Promise<string | null> {
+  const refs = await store.listReferences();
+  const recent = (await store.listModels())
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    .map((m) => m.fit.referenceId)
+    .find((id) => id && refs.some((r) => r.id === id));
+  return recent ?? refs.at(-1)?.id ?? null;
+}
+
+const RUN_KINDS: CodexRunKind[] = ['fit', 'feedback', 'review', 'design', 'design-feedback'];
+
 // ---------------------------------------------------------------- status
 
 app.get('/api/status', route(async (_req, res) => {
@@ -129,12 +160,6 @@ app.post('/api/models', express.raw({ type: () => true, limit: '1gb' }), route(a
   }
   if (positions.length === 0) throw new BadRequest('The mesh has no triangles');
   const analysis = analyzeMesh(positions);
-  // Default to the reference pot used most recently, else the newest one.
-  const refs = await store.listReferences();
-  const recent = (await store.listModels())
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-    .map((m) => m.fit.referenceId)
-    .find((id) => id && refs.some((r) => r.id === id));
   const name = typeof req.query.name === 'string' && req.query.name.trim() ? req.query.name.trim() : 'Untitled pot';
   const model = await store.createModel(
     {
@@ -142,12 +167,30 @@ app.post('/api/models', express.raw({ type: () => true, limit: '1gb' }), route(a
       sourceFile: typeof req.query.sourceFile === 'string' ? req.query.sourceFile : name,
       triangleCount: positions.length / 9,
       transform: initialTransform(positions, analysis),
-      fit: { ...DEFAULT_FIT, referenceId: recent ?? refs.at(-1)?.id ?? null },
+      fit: { ...DEFAULT_FIT, referenceId: await defaultReferenceId() },
       codexThreadId: null,
     },
     writeBinarySTL(positions, `potfit: ${name}`),
   );
   res.status(201).json(model);
+}));
+
+// A pot designed from a description and/or reference images. It starts as a
+// plain pot built around the reference pot, and Codex redesigns it unless
+// `codex` is false.
+app.post('/api/designs', route(async (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const description = typeof b.description === 'string' ? b.description.trim() : '';
+  const images = decodeImages(b.images, 8);
+  const useCodex = b.codex !== false;
+  if (useCodex && !description && images.length === 0) throw new BadRequest('Describe the pot or add a reference image');
+  const fit: FitSettings = { ...DEFAULT_FIT, referenceId: await defaultReferenceId(), ...fitPatch(b.fit) };
+  const ref = fit.referenceId ? await store.getReference(fit.referenceId) : null;
+  if (!ref) throw new BadRequest('Choose a reference pot for the design');
+  const name = typeof b.name === 'string' && b.name.trim() ? b.name.trim() : DEFAULT_DESIGN_NAME;
+  const model = await designs.create({ name, description, images, fit, ref });
+  const run = useCodex ? await codex.start(model.id, { mode: 'design', message: description, images: [] }) : null;
+  res.status(201).json({ model, run });
 }));
 
 app.get('/api/models/:id', route(async (req, res) => {
@@ -158,7 +201,7 @@ app.get('/api/models/:id', route(async (req, res) => {
 app.patch('/api/models/:id', route(async (req, res) => {
   const id = param(req, 'id');
   const b = (req.body ?? {}) as Record<string, unknown>;
-  const patch: ModelPatch & { codexThreadId?: null } = {};
+  const patch: ModelPatch & { codexThreadId?: null; design?: { threadId: null } } = {};
   if ('name' in b) {
     if (typeof b.name !== 'string' || !b.name.trim()) throw new BadRequest('name must be a non-empty string');
     patch.name = b.name.trim();
@@ -172,7 +215,8 @@ app.patch('/api/models/:id', route(async (req, res) => {
     patch.transform = b.transform as ModelPatch['transform'];
   }
   if ('fit' in b) patch.fit = fitPatch(b.fit) as FitSettings;
-  if (b.resetCodex === true) patch.codexThreadId = null;
+  // Forget the conversation: the fitting one, and a designed pot's design one.
+  if (b.resetCodex === true) Object.assign(patch, { codexThreadId: null, design: { threadId: null } });
   res.json(await store.updateModel(id, patch));
 }));
 
@@ -213,14 +257,13 @@ app.get('/api/models/:id/runs', route(async (req, res) => {
 
 app.post('/api/models/:id/runs', route(async (req, res) => {
   const b = (req.body ?? {}) as Record<string, unknown>;
-  const mode = b.mode === 'feedback' || b.mode === 'review' ? b.mode : 'fit';
-  const images = Array.isArray(b.images) ? b.images : [];
-  const decoded = images.slice(0, 4).map((img: { name?: unknown; dataUrl?: unknown }) => {
-    const m = typeof img.dataUrl === 'string' ? /^data:image\/png;base64,(.+)$/.exec(img.dataUrl) : null;
-    if (!m) throw new BadRequest('images must be PNG data URLs');
-    return { name: typeof img.name === 'string' ? img.name : 'image', data: Buffer.from(m[1], 'base64') };
+  const mode = RUN_KINDS.includes(b.mode as CodexRunKind) ? (b.mode as CodexRunKind) : 'fit';
+  const run = await codex.start(param(req, 'id'), {
+    mode,
+    message: typeof b.message === 'string' ? b.message : '',
+    images: decodeImages(b.images, 4),
+    attachments: decodeImages(b.attachments, 8),
   });
-  const run = await codex.start(param(req, 'id'), { mode, message: typeof b.message === 'string' ? b.message : '', images: decoded });
   res.status(202).json(run);
 }));
 
@@ -260,6 +303,58 @@ app.get('/api/models/:id/runs/:runId/events', route(async (req, res) => {
   });
 }));
 
+// ---------------------------------------------------------------- designs
+
+const notWhileRunning = (id: string) => {
+  if (codex.activeRun(id)) throw new Conflict('Codex is working on this model; wait for it to finish or cancel it');
+};
+
+// Rebuild with new parameter values, or with an edited script (kept only if it builds).
+app.post('/api/models/:id/design/build', route(async (req, res) => {
+  const id = param(req, 'id');
+  notWhileRunning(id);
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  let params: ParamValues | undefined;
+  if (b.params !== undefined) {
+    if (!b.params || typeof b.params !== 'object' || Array.isArray(b.params)) throw new BadRequest('params must be an object');
+    params = Object.fromEntries(Object.entries(b.params).filter(([, v]) => ['number', 'boolean', 'string'].includes(typeof v))) as ParamValues;
+  }
+  if (b.script !== undefined && (typeof b.script !== 'string' || b.script.length > 500_000)) throw new BadRequest('script must be a string under 500 kB');
+  const script = b.script as string | undefined;
+  try {
+    res.json(await designs.rebuild(id, { params, script }));
+  } catch (e) {
+    // A failed edit is just refused; a failed rebuild of the saved script is recorded.
+    if (e instanceof BuildError && script === undefined) await designs.recordError(id, e.message);
+    throw e;
+  }
+}));
+
+app.get('/api/models/:id/design/script', route(async (req, res) => {
+  const id = param(req, 'id');
+  if (!existsSync(designs.scriptPath(id))) throw new NotFound('This model has no design script');
+  res.type('text/javascript').send(await designs.readScript(id));
+}));
+
+app.get('/api/models/:id/design/refs/:name', route(async (req, res) => {
+  const name = param(req, 'name');
+  if (!/^[\w-]+\.(png|jpg|webp)$/.test(name)) throw new NotFound('image not found');
+  const dir = designs.refsDir(param(req, 'id'));
+  if (!existsSync(join(dir, name))) throw new NotFound('image not found');
+  res.sendFile(name, { root: dir });
+}));
+
+// Put back the script and parameters from before a design run.
+app.post('/api/models/:id/design/revert', route(async (req, res) => {
+  const id = param(req, 'id');
+  notWhileRunning(id);
+  const run = await store.getRun(id, String((req.body ?? {}).runId ?? ''));
+  if (run.kind !== 'design' && run.kind !== 'design-feedback') throw new BadRequest('Only design runs can be reverted here');
+  const before = join(store.runDir(id, run.id), 'before.mjs');
+  if (!existsSync(before)) throw new NotFound('This run has no saved script to go back to');
+  res.json(await designs.rebuild(id, { script: await readFile(before, 'utf8'), params: run.paramsBefore ?? {}, resetParams: true }));
+}));
+
 // ------------------------------------------------------------- static app
 
 const dist = join(root, 'dist');
@@ -269,13 +364,18 @@ if (existsSync(dist)) {
 }
 
 app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
-  const status = err instanceof NotFound ? 404 : err instanceof BadRequest ? 400 : err instanceof Conflict ? 409 : 500;
+  const status = err instanceof NotFound ? 404 : err instanceof BadRequest ? 400 : err instanceof Conflict ? 409 : err instanceof BuildError ? 422 : 500;
   if (status === 500) console.error(err);
   if (res.headersSent) return res.end();
   res.status(status).json({ error: err.message });
 });
 
-app.listen(port, host, () => {
+app.listen(port, host, (err?: Error) => {
+  // Express 5 reports a failed listen (e.g. the port is taken) here.
+  if (err) {
+    console.error(`potfit: could not listen on ${host}:${port}: ${err.message}`);
+    process.exit(1);
+  }
   const shown = host.includes(':') ? `[${host}]` : host;
   console.log(`potfit API on http://${shown}:${port} (data in ${dataDir})`);
   if (!loopbackOnly) {

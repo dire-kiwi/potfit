@@ -8,11 +8,12 @@ interface Props {
   busy: string | null;
   onSelect(id: string): void;
   onFiles(files: File[]): void;
+  onNewDesign(): void;
   onRename(id: string, name: string): void;
   onDelete(id: string): void;
 }
 
-export function ModelList({ models, selectedId, busy, onSelect, onFiles, onRename, onDelete }: Props) {
+export function ModelList({ models, selectedId, busy, onSelect, onFiles, onNewDesign, onRename, onDelete }: Props) {
   const input = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
 
@@ -32,9 +33,14 @@ export function ModelList({ models, selectedId, busy, onSelect, onFiles, onRenam
     >
       <header>
         <h2>Pot models</h2>
-        <button className="small" onClick={() => input.current?.click()} disabled={!!busy}>
-          + Import
-        </button>
+        <div className="row tight">
+          <button className="small" onClick={onNewDesign} disabled={!!busy} title="Design a new pot from a description or pictures">
+            + Design
+          </button>
+          <button className="small" onClick={() => input.current?.click()} disabled={!!busy}>
+            + Import
+          </button>
+        </div>
         <input
           ref={input}
           type="file"
@@ -48,7 +54,7 @@ export function ModelList({ models, selectedId, busy, onSelect, onFiles, onRenam
         />
       </header>
       {busy && <p className="hint busy">{busy}</p>}
-      {models.length === 0 && !busy && <p className="hint">Drop an STL, 3MF, OBJ, GLB or PLY file here, or use Import.</p>}
+      {models.length === 0 && !busy && <p className="hint">Drop an STL, 3MF, OBJ, GLB or PLY file here, use Import, or design a new pot.</p>}
       <ul className="list">
         {models.map((m) => (
           <li key={m.id} className={m.id === selectedId ? 'active' : ''}>
