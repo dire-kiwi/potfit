@@ -209,6 +209,10 @@ export function App() {
           const finished = e.run;
           setActiveRun(null);
           setRuns((rs) => [...rs.filter((r) => r.id !== finished.id), finished]);
+          // Reviews never change the model, and the user may have been editing
+          // it during the review (possibly with a save still pending), so the
+          // server's copy must not overwrite what's on screen.
+          if (finished.kind === 'review') return;
           if (finished.status === 'done' && finished.result && modelRef.current?.id === modelId) {
             setTransform(finished.result.transform, { record: finished.transformBefore, save: false });
           }
