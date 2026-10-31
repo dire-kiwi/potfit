@@ -16,6 +16,7 @@ export const approved = (reviews: { result: { verdict: string } }[]) => reviews.
 /** Owns the loop on the server, independently of browser selection or connection. */
 export class ScreenshotReviews {
   private running = new Map<string, ScreenshotReview>();
+  private controllers = new Map<string, AbortController>();
   private store: Store;
   private codex: CodexRunner;
   constructor(store: Store, codex: CodexRunner) { this.store = store; this.codex = codex; }
@@ -44,6 +45,7 @@ export class ScreenshotReviews {
     const state = this.running.get(id);
     if (!state) return false;
     state.status = 'cancelled';
+    this.controllers.get(id)?.abort();
     this.codex.cancel(id);
     return true;
   }
@@ -51,17 +53,21 @@ export class ScreenshotReviews {
     if (this.isRunning(id) || this.codex.activeRun(id)) throw new Conflict('An agent is already working on this model');
     const state: ScreenshotReview = { id: randomUUID(), status: 'running', round: 0, phase: 'Starting', error: null, rounds: [] };
     this.running.set(id, state);
+    const controller = new AbortController();
+    this.controllers.set(id, controller);
     try {
       const model = await this.store.getModel(id);
       if (!model.fit.referenceId) throw new BadRequest('Choose a reference pot first');
       await this.save(id, state);
     }
-    catch (e) { this.running.delete(id); throw e; }
+    catch (e) { this.running.delete(id); this.controllers.delete(id); throw e; }
     void this.execute(id, state, { ...target, name: 'target' }, settings).catch(e => console.error('Could not save screenshot review:', e));
     return state;
   }
   private async run(id: string, input: StartInput): Promise<CodexRun> {
-    const run = await this.codex.start(id, input);
+    const signal = this.controllers.get(id)!.signal;
+    signal.throwIfAborted();
+    const run = await this.codex.start(id, input, signal);
     if (run.status !== 'running') return run;
     return new Promise((resolve, reject) => {
       const off = this.codex.subscribe(id, run.id, e => { if (e.type === 'result') resolve(e.run); });
@@ -81,6 +87,7 @@ export class ScreenshotReviews {
           if (state.status !== 'running') break;
           state.phase = `Reviewing: ${focus}`;
           await this.save(id, state);
+          if (state.status !== 'running') break;
           const run = await this.run(id, { ...settings, mode: 'review', message: `Screenshot review round ${round}: ${focus}`, images: [target, produced], visualReview:
             `Compare the attached target screenshot (target) against the fresh render of the produced work (produced: front, side, three-quarter, top). Your focus: ${focus}. Review independently; do not change any files. Judge visual similarity, allowing for camera, lighting and background differences. A pass means no meaningful visual changes remain. Otherwise return concerns or fail with specific actionable discrepancies in findings and feedbackForFitter. Do not approve merely because the nursery pot fits. Return the required review JSON.` });
           if (state.status !== 'running') break;
@@ -94,7 +101,9 @@ export class ScreenshotReviews {
         if (round === MAX_ROUNDS) { state.status = 'limit'; break; }
         state.phase = 'Worker adjusting the model';
         await this.save(id, state);
+        if (state.status !== 'running') break;
         const current = await this.store.getModel(id);
+        if (state.status !== 'running') break;
         const mode = current.design ? (current.design.threadId ? 'design-feedback' : 'design') : (current.codexThreadId ? 'feedback' : 'fit');
         const run = await this.run(id, { ...settings, mode, images: [target, produced], message:
           `Match the target screenshot. Adjust the produced model using this independent review panel's feedback. Preserve functional fit and printability.\n${entry.reviews.map(r => `${r.focus}: ${r.result.summary}\n${r.result.feedbackForFitter}\n${r.result.findings.map(f => f.detail).join('\n')}`).join('\n\n')}` });
@@ -106,11 +115,8 @@ export class ScreenshotReviews {
       if (state.status === 'running') { state.status = 'error'; state.error = (e as Error).message; }
     } finally {
       state.phase = state.status === 'done' ? 'All reviewers approved' : state.status === 'limit' ? 'Reached 20 review rounds' : state.status;
-      try {
-      const model = await this.store.getModel(id);
-      if (!model.fit.referenceId) throw new BadRequest('Choose a reference pot first');
-      await this.save(id, state);
-    } finally { this.running.delete(id); }
+      try { await this.save(id, state); }
+      finally { this.running.delete(id); this.controllers.delete(id); }
     }
   }
 }

@@ -74,6 +74,7 @@ export function App() {
   const setInstructionsDraft = (text: string) => setDraft('instructions', text);
   const setFeedbackDraft = (text: string) => setDraft('feedback', text);
   const [loopRunning, setLoopRunning] = useState(false);
+  const [startingReview, setStartingReview] = useState(false);
   const loopVersion = useRef('');
   const [pendingImport, setPendingImport] = useState<PendingImport | null>(null);
   const [designing, setDesigning] = useState(false);
@@ -109,22 +110,29 @@ export function App() {
   const reviewRuns = runs.filter((r) => r.kind === 'review');
   const fitActive = activeRun && activeRun.kind !== 'review' ? activeRun : null;
   const reviewActive = activeRun && activeRun.kind === 'review' ? activeRun : null;
-  const locked = !!fitActive || building || loopRunning;
+  const locked = !!fitActive || building || loopRunning || startingReview;
 
   const fail = (e: unknown) => setError((e as Error).message ?? String(e));
 
   // ------------------------------------------------------------ saving
 
+  const saving = useRef<Promise<void>>(Promise.resolve());
   const flushSave = useCallback(async () => {
     const p = pendingSave.current;
-    if (!p) return;
-    pendingSave.current = null;
-    clearTimeout(p.timer);
+    if (p) {
+      pendingSave.current = null;
+      clearTimeout(p.timer);
+      saving.current = saving.current.catch(() => undefined).then(async () => {
+        const saved = await api.patchModel(p.id, p.patch);
+        setModels((ms) => ms.map((m) => (m.id === saved.id ? saved : m)));
+      });
+    }
     try {
-      const saved = await api.patchModel(p.id, p.patch);
-      setModels((ms) => ms.map((m) => (m.id === saved.id ? saved : m)));
+      await saving.current;
+      return true;
     } catch (e) {
       fail(e);
+      return false;
     }
   }, []);
 
@@ -178,7 +186,7 @@ export function App() {
   const redo = useCallback(() => step('future'), [step]);
 
   const updateFit = (patch: Partial<FitSettings>) => {
-    if (!model || loopRunning) return;
+    if (!model || loopRunning || startingReview) return;
     setModel({ ...model, fit: { ...model.fit, ...patch } });
     scheduleSave(model.id, { fit: patch });
   };
@@ -588,7 +596,7 @@ export function App() {
       model={model}
       hasReference={!!reference}
       activeRun={fitActive}
-      reviewRunning={!!reviewActive || loopRunning}
+      reviewRunning={!!reviewActive || loopRunning || startingReview}
       runs={fitRuns}
       logs={logs}
       instructions={instructionsDraft}
@@ -725,7 +733,7 @@ export function App() {
         {model ? (
           <>
             {model.design && (
-              <DesignPanel key={model.id} model={model} references={references} lockedBy={activeRun?.kind ?? (loopRunning ? 'feedback' : null)} building={building} onBuild={buildDesign} />
+              <DesignPanel key={model.id} model={model} references={references} lockedBy={activeRun?.kind ?? (loopRunning || startingReview ? 'feedback' : null)} building={building} onBuild={buildDesign} />
             )}
             {model.design && codexPanel}
             <FitPanel
@@ -748,7 +756,16 @@ export function App() {
               exportUrl={api.exportUrl(model.id)}
             />
             {!model.design && codexPanel}
-            <ScreenshotReviewPanel key={model.id} modelId={model.id} settings={codexSettings}
+            <ScreenshotReviewPanel key={model.id} modelId={model.id}
+              onStart={async (images) => {
+                setStartingReview(true);
+                try {
+                  if (!await flushSave()) throw new Error('Could not save model edits. Screenshot review was not started.');
+                  const state = await api.startScreenshotReview(model.id, images, codexSettings);
+                  setLoopRunning(state.status === 'running');
+                  return state;
+                } finally { setStartingReview(false); }
+              }}
               disabled={!!activeRun || building || !reference || !status?.codex.available} onUpdate={onLoopUpdate} />
             <ReviewPanel
               settings={codexSettings}
@@ -757,7 +774,7 @@ export function App() {
               model={model}
               hasReference={!!reference}
               activeRun={reviewActive}
-              fitRunning={!!fitActive || loopRunning}
+              fitRunning={!!fitActive || loopRunning || startingReview}
               reviews={reviewRuns}
               logs={logs}
               onStart={() => startCodex('review', '')}

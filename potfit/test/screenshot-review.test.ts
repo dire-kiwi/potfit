@@ -80,3 +80,43 @@ test('cancel prevents subsequent agents; duplicate start rejected; restart marks
   await loop.recover(); assert.equal((await loop.get(model.id))?.status, 'error');
   assert.equal(approved([]), false);
 });
+
+for (const pauseAt of ['worker save', 'worker model read', 'reviewer save']) {
+  test(`cancelling during ${pauseAt} prevents the next agent and preserves the model`, async t => {
+    const { loop, model, inputs, store } = await fixture(t, () => 'fail');
+    const before = await store.getModel(model.id);
+    const meshBefore = await readFile(store.meshFile(model.id));
+    let reached!: () => void;
+    const paused = new Promise<void>(resolve => { reached = resolve; });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let intercepted = false;
+    // Pause the exact async boundary from the reported race, after the status check.
+    if (pauseAt.endsWith('save')) {
+      const access = loop as unknown as { save(id: string, state: { phase: string }): Promise<void> };
+      const save = access.save.bind(loop);
+      access.save = async (id, state) => {
+        if (!intercepted && (pauseAt === 'worker save' ? state.phase === 'Worker adjusting the model' : state.phase.startsWith('Reviewing:'))) {
+          intercepted = true; reached(); await gate;
+        }
+        await save(id, state);
+      };
+    } else {
+      const getModel = store.getModel.bind(store);
+      store.getModel = async id => {
+        if (!intercepted && inputs.length === 3) { intercepted = true; reached(); await gate; }
+        return getModel(id);
+      };
+    }
+    await loop.start(model.id, target, {});
+    await paused;
+    assert.equal(loop.cancel(model.id), true);
+    release();
+    const state = await finished(loop, model);
+    assert.equal(state.status, 'cancelled');
+    assert.equal(inputs.length, pauseAt === 'reviewer save' ? 0 : 3);
+    assert.equal(inputs.some(input => input.mode !== 'review'), false);
+    assert.deepEqual(await store.getModel(model.id), before);
+    assert.deepEqual(await readFile(store.meshFile(model.id)), meshBefore);
+  });
+}

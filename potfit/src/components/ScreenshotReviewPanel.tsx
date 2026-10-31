@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
-import type { CodexSettings, ScreenshotReview } from '../../shared/types.ts';
+import type { ScreenshotReview } from '../../shared/types.ts';
 import { api } from '../api.ts';
 import { ImagePicker, type PickedImage } from './ImagePicker.tsx';
 
-export function ScreenshotReviewPanel({ modelId, settings, disabled, onUpdate }: {
-  modelId: string; settings: CodexSettings; disabled: boolean;
+export function ScreenshotReviewPanel({ modelId, onStart, disabled, onUpdate }: {
+  modelId: string; disabled: boolean;
+  onStart(images: PickedImage[]): Promise<ScreenshotReview>;
   onUpdate(state: ScreenshotReview | null): void;
 }) {
   const [images, setImages] = useState<PickedImage[]>([]);
@@ -32,7 +33,7 @@ export function ScreenshotReviewPanel({ modelId, settings, disabled, onUpdate }:
       <ImagePicker images={images} onChange={next => setImages(next.slice(-1))} disabled={disabled || sending} />
       <button disabled={disabled || sending || images.length !== 1} onClick={async () => {
         setSending(true); setError('');
-        try { const next = await api.startScreenshotReview(modelId, images, settings); setState(next); onUpdate(next); }
+        try { const next = await onStart(images); setState(next); onUpdate(next); }
         catch (e) { setError((e as Error).message); }
         finally { setSending(false); }
       }}>Start screenshot review</button>
