@@ -272,6 +272,21 @@ export interface DesignResult {
 
 export type CodexRunKind = 'fit' | 'feedback' | 'review' | 'design' | 'design-feedback';
 
+export const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
+export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
+
+export interface CodexSettings {
+  /** Empty or omitted values use the server / Codex defaults. */
+  model?: string | null;
+  effort?: ReasoningEffort | null;
+}
+
+export interface CodexModelOption {
+  id: string;
+  name: string;
+  efforts: ReasoningEffort[];
+}
+
 export interface CodexRun {
   id: string;
   modelId: string;
@@ -280,6 +295,8 @@ export interface CodexRun {
    * and design-feedback rewrite a designed pot's script and rebuild it.
    */
   kind: CodexRunKind;
+  /** Requested overrides; absent on older runs. Null means delegated to Codex. */
+  settings?: CodexSettings;
   /** User instructions (fit, design) or feedback text; empty for reviews. */
   message: string;
   status: CodexRunStatus;
@@ -328,7 +345,7 @@ export type CodexEvent =
   | { type: 'result'; run: CodexRun };
 
 export interface ServerStatus {
-  codex: { available: boolean; version: string | null; error: string | null };
+  codex: { available: boolean; version: string | null; error: string | null; defaultModel?: string | null; models?: CodexModelOption[] };
   /** Blender, which Codex can use to edit meshes and make parts for designs. */
   blender: { available: boolean; version: string | null; error: string | null };
   dataDir: string;

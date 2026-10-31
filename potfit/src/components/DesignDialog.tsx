@@ -1,10 +1,11 @@
 import { useState } from 'react';
+import { CodexControls, type CodexControlsProps } from './CodexControls.tsx';
 import { DEFAULT_FIT, type CodexRun, type PotModel, type ReferencePot } from '../../shared/types.ts';
 import { api } from '../api.ts';
 import { ImagePicker, type PickedImage } from './ImagePicker.tsx';
 import { NumberField } from './NumberField.tsx';
 
-interface Props {
+interface Props extends CodexControlsProps {
   references: ReferencePot[];
   /** Reference pot to start with. */
   referenceId: string | null;
@@ -14,7 +15,7 @@ interface Props {
 }
 
 /** New pot from a description and/or reference images. */
-export function DesignDialog({ references, referenceId, codexAvailable, onCreated, onCancel }: Props) {
+export function DesignDialog({ references, referenceId, codexAvailable, onCreated, onCancel, settings, onSettings, status }: Props) {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [images, setImages] = useState<PickedImage[]>([]);
@@ -38,6 +39,7 @@ export function DesignDialog({ references, referenceId, codexAvailable, onCreate
         images: images.map((i) => ({ name: i.name, dataUrl: i.dataUrl })),
         fit: { referenceId: refId, clearance, topOffset, floorGap },
         codex: useCodex,
+        ...settings,
       });
       onCreated(model, run);
     } catch (e) {
@@ -105,6 +107,7 @@ export function DesignDialog({ references, referenceId, codexAvailable, onCreate
           <input type="checkbox" checked={useCodex} disabled={!codexAvailable} onChange={(e) => setUseCodex(e.target.checked)} /> Design it with Codex
           {!codexAvailable && <span className="muted"> (Codex isn't available)</span>}
         </label>
+        {useCodex && <CodexControls settings={settings} onSettings={onSettings} status={status} disabled={sending} />}
         {!useCodex && <p className="hint">Without Codex you get a plain pot with a few settings to adjust.</p>}
         {error && <p className="error">{error}</p>}
         <div className="row end">

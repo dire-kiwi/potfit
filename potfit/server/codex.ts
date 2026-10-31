@@ -17,9 +17,11 @@ import { DEFAULT_DESIGN_NAME, type DesignImage, type Designs } from './design.ts
 import { DESIGN_SCHEMA, designFeedbackPrompt, designPrompt } from './design-prompt.ts';
 import { agentsMd, feedbackPrompt, fitPrompt, OUTPUT_SCHEMA, REVIEW_SCHEMA, reviewAgentsMd, reviewPrompt } from './prompt.ts';
 import type { Store } from './store.ts';
+import { BadRequest, parseCodexSettings, codexSettingsArgs } from './codex-settings.ts';
+import type { CodexSettings } from '../shared/types.ts';
 
 export class Conflict extends Error {}
-export class BadRequest extends Error {}
+export { BadRequest } from './codex-settings.ts';
 
 export const SANDBOX_MODES = ['read-only', 'workspace-write', 'danger-full-access'] as const;
 export type SandboxMode = (typeof SANDBOX_MODES)[number];
@@ -42,7 +44,7 @@ interface ActiveRun {
   cancelled: boolean;
 }
 
-export interface StartInput {
+export interface StartInput extends CodexSettings {
   mode: CodexRunKind;
   message: string;
   /** Screenshots of the app's views. */
@@ -236,6 +238,7 @@ export class CodexRunner {
 
   async start(modelId: string, input: StartInput): Promise<CodexRun> {
     if (this.active.has(modelId)) throw new Conflict('Codex is already working on this model');
+    const settings = parseCodexSettings(input);
     const model = await this.store.getModel(modelId);
     const ref = model.fit.referenceId ? await this.store.getReference(model.fit.referenceId) : null;
     const verb = input.mode === 'review' ? 'review' : isDesignRun(input.mode) ? 'design' : 'fit';
@@ -249,6 +252,7 @@ export class CodexRunner {
       id: randomUUID(),
       modelId,
       kind: input.mode,
+      settings: { model: settings.model || this.opts.model, effort: settings.effort },
       message: input.message,
       status: 'running',
       startedAt: new Date().toISOString(),
@@ -409,7 +413,7 @@ export class CodexRunner {
       '-c', `sandbox_mode="${this.opts.sandbox}"`,
       '--output-schema', schemaPath,
       '-o', lastPath,
-      ...(this.opts.model ? ['-m', this.opts.model] : []),
+      ...codexSettingsArgs(run.settings ?? {}),
       ...imagePaths.flatMap((p) => ['-i', p]),
     ];
     // Reviews are one-off sessions that are never resumed, so don't keep them.
@@ -423,6 +427,11 @@ export class CodexRunner {
       type: 'log',
       level: 'info',
       text: review ? 'Starting an independent review session' : resume ? `Resuming Codex session ${run.threadId}` : 'Starting a new Codex session',
+    });
+
+    this.emit(a, {
+      type: 'log', level: 'info',
+      text: `Model: ${run.settings?.model || 'Codex default'} · reasoning effort: ${run.settings?.effort || 'Codex default'}`,
     });
 
     const child = spawn(this.opts.bin, args, { cwd: ws, stdio: ['ignore', 'pipe', 'pipe'], env: process.env });

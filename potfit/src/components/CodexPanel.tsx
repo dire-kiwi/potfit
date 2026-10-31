@@ -1,9 +1,10 @@
 import { useState } from 'react';
+import { CodexControls, type CodexControlsProps } from './CodexControls.tsx';
 import type { CodexRun, FitGoals, PotModel, ServerStatus } from '../../shared/types.ts';
 import { ImagePicker, type PickedImage } from './ImagePicker.tsx';
 import { Elapsed, LogView, type LogEntry } from './RunLog.tsx';
 
-interface Props {
+interface Props extends CodexControlsProps {
   status: ServerStatus | null;
   model: PotModel;
   hasReference: boolean;
@@ -205,6 +206,7 @@ export function CodexPanel(props: Props) {
           </span>
         </span>
       </header>
+      <CodexControls settings={props.settings} onSettings={props.onSettings} status={status} disabled={blocked || !!activeRun} />
       {!available && status && <p className="error">The server could not run the codex CLI: {status.codex.error}</p>}
 
       {activeRun ? (
