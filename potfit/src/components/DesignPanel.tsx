@@ -69,7 +69,7 @@ function ParamControl({ name, spec, value, disabled, onChange }: { name: string;
   );
 }
 
-function ReportSummary({ report }: { report: DesignReport }) {
+function ReportSummary({ report, avoidOverhangs }: { report: DesignReport; avoidOverhangs: boolean }) {
   const s = report.size;
   return (
     <>
@@ -83,7 +83,7 @@ function ReportSummary({ report }: { report: DesignReport }) {
           {report.volume.toFixed(1)} cm³ <small>about {Math.round(report.volume * 1.24)} g PLA solid</small>
         </dd>
         <dt>Overhangs</dt>
-        <dd className={report.overhangArea > 25 ? 'warn' : 'ok'}>
+        <dd className={report.overhangArea > 25 && avoidOverhangs ? 'warn' : 'ok'}>
           {report.overhangArea > 25 ? `${Math.round(report.overhangArea)} mm² over 45°` : 'None to support'}
           {report.overhangs.length > 0 && report.overhangArea > 25 && (
             <small>
@@ -225,7 +225,7 @@ export function DesignPanel({ model, references, lockedBy, building, onBuild }: 
         <p className="hint">This design has no settings to adjust.</p>
       )}
       {error && <p className="error">{error}</p>}
-      {design.report && <ReportSummary report={design.report} />}
+      {design.report && <ReportSummary report={design.report} avoidOverhangs={model.avoidOverhangs !== false} />}
 
       <details className="script" open={scriptOpen} onToggle={(e) => setScriptOpen(e.currentTarget.open)}>
         <summary>Design script</summary>

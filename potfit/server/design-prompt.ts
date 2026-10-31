@@ -203,10 +203,14 @@ Adds a line to the build report, e.g. a dimension you want the user to see.
 
 - One solid piece, flat base on z = 0 (\`lib.trimBase\` if parts dip below).
 - Walls at least 1.6 mm (2.4 to 3 mm is typical), floor at least 1.6 mm.
-- No overhang steeper than 45° from vertical: chamfer the undersides of arms,
+- When state.json "avoidOverhangs" is true (the default), avoid overhangs
+  steeper than 45° from vertical: chamfer the undersides of arms,
   chins, ledges and lips at 45°, or let them grow out of the body gradually.
   \`./pot-tool build\` lists overhangs; keep the total small (under about
   25 mm²) unless the user accepts supports, and say so if you can't.
+- When "avoidOverhangs" is false, supports are accepted. Preserve the requested
+  shape instead of changing it to eliminate overhangs. Report support needs;
+  overhang area alone is not a warning you must fix.
 - Details: raised features at least 1 mm, engraved lines at least 0.8 mm wide
   and 0.5 mm deep. Nothing thinner than 1.2 mm sticking out.
 - Keep decorations out of the cavity and the opening; nothing across the top.
@@ -217,7 +221,8 @@ Adds a line to the build report, e.g. a dimension you want the user to see.
 1. Read state.json. Look at every image in refs/ and every image attached to
    the prompt. Work out the shape, proportions, features and style.
 2. Write design.mjs.
-3. \`./pot-tool build\`: fix every error and warning. The nursery pot must
+3. \`./pot-tool build\`: fix every error and applicable warning according to
+   the overhang preference. The nursery pot must
    clear, and the rim offset and floor gap must match the goals.
 4. \`./pot-tool preview\`, then look at out/preview.png (front, right side,
    three-quarter, top) and out/section.png. Compare them with the references
@@ -294,4 +299,11 @@ ${describeGoals(ref, model.fit)}
 Parameter values the user has set: ${paramsLine(model.design?.params ?? {})}
 ${failed ? `\nNote: ${failed}\n` : ''}
 state.json is up to date. Change design.mjs to address the feedback, build, preview and check it, then reply with the JSON answer.`;
+}
+
+/** Repeated every turn so a resumed conversation observes preference changes. */
+export function overhangPreference(avoidOverhangs = true): string {
+  return avoidOverhangs
+    ? 'Overhang preference: avoid supports. Minimize downward-facing surfaces steeper than 45° from vertical (aim for under 25 mm²). Preserve functional fit and structural printability.'
+    : 'Overhang preference: supports are accepted. Do not change the requested shape just to remove overhangs or reject it for overhang area alone. Report where supports may be needed. Preserve functional fit, wall thickness and a solid printable model.';
 }

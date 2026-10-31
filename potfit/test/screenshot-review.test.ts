@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { overhangPreference } from '../server/design-prompt.ts';
 import { ScreenshotReviews, approved } from '../server/screenshot-review.ts';
 import { Store } from '../server/store.ts';
 import type { CodexRunner, StartInput } from '../server/codex.ts';
@@ -120,3 +121,30 @@ for (const pauseAt of ['worker save', 'worker model read', 'reviewer save']) {
     assert.deepEqual(await readFile(store.meshFile(model.id)), meshBefore);
   });
 }
+
+test('user prompt and accepted supports reach every reviewer and worker and survive reload', async t => {
+  const { loop, model, inputs, store } = await fixture(t, index => index === 2 ? 'concerns' : 'pass');
+  await store.updateModel(model.id, { avoidOverhangs: false });
+  assert.equal((await store.getModel(model.id)).avoidOverhangs, false);
+  await loop.start(model.id, target, {}, '  Keep the curved arms.  ');
+  await finished(loop, model);
+  for (const input of inputs) {
+    const prompt = input.visualReview ?? input.message;
+    assert.match(prompt, /Keep the curved arms/);
+    assert.match(prompt, /supports are accepted/);
+    assert.match(prompt, /Preserve functional fit/);
+  }
+  const reloaded = await new ScreenshotReviews(store, {} as CodexRunner).get(model.id);
+  assert.equal(reloaded?.prompt, 'Keep the curved arms.');
+});
+
+test('older models default to avoiding supports; empty iterative prompt stays optional', async t => {
+  const { loop, model, inputs } = await fixture(t, () => 'pass');
+  assert.equal(model.avoidOverhangs, undefined);
+  await loop.start(model.id, target, {});
+  const state = await finished(loop, model);
+  assert.equal(state.prompt, '');
+  assert.ok(inputs.every(input => input.visualReview?.includes('avoid supports')));
+  assert.match(overhangPreference(), /avoid supports/);
+  assert.match(overhangPreference(false), /supports are accepted/);
+});

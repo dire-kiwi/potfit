@@ -14,7 +14,7 @@ import { applyTransform, computeBounds, orientedBounds, validateTransform } from
 import type { CodexEvent, CodexItem, CodexResult, CodexRun, CodexRunKind, DesignResult, FitGoals, MeshEdit, PotModel, ReferencePot, ReviewResult } from '../shared/types.ts';
 import { blenderWrapper, type BlenderOption, type ToolStatus } from './blender.ts';
 import { DEFAULT_DESIGN_NAME, type DesignImage, type Designs } from './design.ts';
-import { DESIGN_SCHEMA, designFeedbackPrompt, designPrompt } from './design-prompt.ts';
+import { DESIGN_SCHEMA, designFeedbackPrompt, designPrompt, overhangPreference } from './design-prompt.ts';
 import { agentsMd, feedbackPrompt, fitPrompt, OUTPUT_SCHEMA, REVIEW_SCHEMA, reviewAgentsMd, reviewPrompt } from './prompt.ts';
 import type { Store } from './store.ts';
 import { BadRequest, parseCodexSettings, codexSettingsArgs } from './codex-settings.ts';
@@ -419,6 +419,7 @@ export class CodexRunner {
       const names = shots.map((s) => s.name.replace(/\.\w+$/, ''));
       prompt = run.kind === 'fit' ? fitPrompt(model, ref, input.message, names) : feedbackPrompt(model, ref, input.message, names);
     }
+    prompt += '\n\n' + overhangPreference(model.avoidOverhangs !== false);
     const schemaPath = join(runDir, 'output-schema.json');
     await writeFile(schemaPath, JSON.stringify(schema, null, 2));
     const lastPath = join(runDir, 'last-message.json');

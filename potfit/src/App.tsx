@@ -4,6 +4,7 @@ import { parseSTL, writeBinarySTL } from '../shared/stl.ts';
 import { cloneTransform, transformsEqual } from '../shared/transform.ts';
 import type { ScreenshotReview, CodexSettings, CodexEvent, CodexRun, FitMetrics, FitSettings, ParamValues, PotModel, PotTransform, ReferencePot, ServerStatus } from '../shared/types.ts';
 import { api, type ModelPatchBody } from './api.ts';
+import { OverhangSelector } from './components/OverhangSelector.tsx';
 import { CodexPanel } from './components/CodexPanel.tsx';
 import { DesignDialog } from './components/DesignDialog.tsx';
 import { DesignPanel } from './components/DesignPanel.tsx';
@@ -488,7 +489,7 @@ export function App() {
   const startCodex = async (mode: CodexRun['kind'], message: string, attachments: PickedImage[] = []) => {
     if (!model || !viewer.current) return;
     const shots = viewer.current.capture();
-    await flushSave();
+    if (!await flushSave()) throw new Error('Could not save model edits. Codex was not started.');
     const run = await api.startRun(model.id, {
       ...codexSettings,
       mode,
@@ -755,13 +756,21 @@ export function App() {
               onRedo={redo}
               exportUrl={api.exportUrl(model.id)}
             />
+            <section className="panel">
+              <h2>Printing preferences</h2>
+              <OverhangSelector value={model.avoidOverhangs !== false} disabled={locked || !!activeRun}
+                onChange={avoidOverhangs => {
+                  setModel({ ...model, avoidOverhangs });
+                  scheduleSave(model.id, { avoidOverhangs });
+                }} />
+            </section>
             {!model.design && codexPanel}
             <ScreenshotReviewPanel key={model.id} modelId={model.id}
-              onStart={async (images) => {
+              onStart={async (images, prompt) => {
                 setStartingReview(true);
                 try {
                   if (!await flushSave()) throw new Error('Could not save model edits. Screenshot review was not started.');
-                  const state = await api.startScreenshotReview(model.id, images, codexSettings);
+                  const state = await api.startScreenshotReview(model.id, images, codexSettings, prompt);
                   setLoopRunning(state.status === 'running');
                   return state;
                 } finally { setStartingReview(false); }
