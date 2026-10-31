@@ -16,6 +16,8 @@ test('results are validated', () => {
   assert.deepEqual(r.fit, { clearance: 4, scaleMode: 'uniform', topOffset: null, floorGap: 1 });
   assert.throws(() => parseResult(JSON.stringify({ transform: { ...transform, up: 'up' } })), /invalid transform/);
   assert.throws(() => parseResult('no json here'), /JSON/);
+  assert.equal(r.editedMesh, null);
+  assert.equal(parseResult(JSON.stringify({ transform, editedMesh: ' edited.stl ' })).editedMesh, 'edited.stl');
 });
 
 test('missing or malformed goals are ignored rather than failing the run', () => {

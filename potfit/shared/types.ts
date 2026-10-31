@@ -233,6 +233,17 @@ export interface CodexResult {
   summary: string;
   warnings: string[];
   confidence: 'high' | 'medium' | 'low';
+  /**
+   * A mesh Codex edited (with Blender, say), relative to its workspace, in the
+   * raw coordinates of mesh.stl; `transform` places it. Null if it only placed the pot.
+   */
+  editedMesh?: string | null;
+}
+
+/** A fit run that replaced the model's mesh. The mesh from before is kept in the run's directory. */
+export interface MeshEdit {
+  trianglesBefore: number;
+  trianglesAfter: number;
 }
 
 export interface ReviewFinding {
@@ -265,7 +276,7 @@ export interface CodexRun {
   id: string;
   modelId: string;
   /**
-   * fit and feedback change the placement; review only looks at it; design
+   * fit and feedback change the placement (and may edit the mesh); review only looks at it; design
    * and design-feedback rewrite a designed pot's script and rebuild it.
    */
   kind: CodexRunKind;
@@ -287,6 +298,8 @@ export interface CodexRun {
   paramsBefore?: ParamValues | null;
   /** Reference images the user attached to this run. */
   attachments?: string[];
+  /** Fit runs that edited the mesh; Revert puts the old mesh back. */
+  meshEdit?: MeshEdit | null;
   /** Server-side check of the result transform, or of the reviewed placement. */
   metrics: FitMetrics | null;
   error: string | null;
@@ -316,5 +329,7 @@ export type CodexEvent =
 
 export interface ServerStatus {
   codex: { available: boolean; version: string | null; error: string | null };
+  /** Blender, which Codex can use to edit meshes and make parts for designs. */
+  blender: { available: boolean; version: string | null; error: string | null };
   dataDir: string;
 }

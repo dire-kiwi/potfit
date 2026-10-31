@@ -6,9 +6,10 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { chmod, copyFile, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, cp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { DesignParam, DesignReport, DesignTarget, FitSettings, ParamValues, PotDesign, PotModel, ReferencePot } from '../shared/types.ts';
+import { blenderWrapper, type BlenderOption } from './blender.ts';
 import { designAgentsMd } from './design-prompt.ts';
 import type { Store } from './store.ts';
 
@@ -46,13 +47,15 @@ export class Designs {
   private store: Store;
   private root: string;
   private toolPath: string;
+  private blender: BlenderOption;
   // One build at a time per model.
   private queues = new Map<string, Promise<unknown>>();
 
-  constructor(store: Store, opts: { root: string; toolPath: string }) {
+  constructor(store: Store, opts: { root: string; toolPath: string; blender: BlenderOption }) {
     this.store = store;
     this.root = opts.root;
     this.toolPath = opts.toolPath;
+    this.blender = opts.blender;
   }
 
   dir(modelId: string) {
@@ -65,6 +68,28 @@ export class Designs {
 
   refsDir(modelId: string) {
     return join(this.dir(modelId), 'refs');
+  }
+
+  /** STL parts the script loads with lib.part (made in Blender, say). */
+  partsDir(modelId: string) {
+    return join(this.dir(modelId), 'parts');
+  }
+
+  /** Keep a copy of the parts with a run, so the run can be undone. */
+  async snapshotParts(modelId: string, runDir: string) {
+    const to = join(runDir, 'parts-before');
+    await mkdir(to, { recursive: true });
+    if (existsSync(this.partsDir(modelId))) await cp(this.partsDir(modelId), to, { recursive: true });
+  }
+
+  /** Put back the parts from before a run (runs from before parts existed kept none). */
+  async restoreParts(modelId: string, runDir: string) {
+    const from = join(runDir, 'parts-before');
+    if (!existsSync(from)) return;
+    const parts = this.partsDir(modelId);
+    if (existsSync(parts)) await cp(parts, join(runDir, 'parts-after'), { recursive: true }).catch(() => undefined);
+    await rm(parts, { recursive: true, force: true });
+    await cp(from, parts, { recursive: true });
   }
 
   private serial<T>(modelId: string, fn: () => Promise<T>): Promise<T> {
@@ -92,7 +117,7 @@ export class Designs {
 
   /**
    * Run the script in a locked-down Node: it may read only the build code,
-   * manifold-3d and the script, write only its own output directory, and has
+   * manifold-3d, the script and its parts, write only its own output directory, and has
    * no network, subprocesses or workers.
    */
   private async runBuild(modelId: string, script: string, target: DesignTarget, params: ParamValues): Promise<BuildResult> {
@@ -100,10 +125,13 @@ export class Designs {
     await mkdir(out, { recursive: true });
     try {
       const inputFile = join(out, 'input.json');
-      await writeFile(inputFile, JSON.stringify({ reference: target.reference, fit: { clearance: target.clearance, topOffset: target.topOffset, floorGap: target.floorGap }, params }));
+      const parts = this.partsDir(modelId);
+      const partsDir = existsSync(parts) ? parts : null;
+      await writeFile(inputFile, JSON.stringify({ reference: target.reference, fit: { clearance: target.clearance, topOffset: target.topOffset, floorGap: target.floorGap }, params, partsDir }));
       const tools = dirname(this.toolPath);
       const args = [
         '--permission',
+        ...(partsDir ? [`--allow-fs-read=${partsDir}`] : []),
         `--allow-fs-read=${tools}`,
         `--allow-fs-read=${join(this.root, 'shared')}`,
         `--allow-fs-read=${join(this.root, 'node_modules', 'manifold-3d')}`,
@@ -249,7 +277,13 @@ export class Designs {
     const tool = join(ws, 'pot-tool');
     await writeFile(tool, `#!/bin/sh\nexec "${process.execPath}" "${this.toolPath}" "$@"\n`);
     await chmod(tool, 0o755);
-    await writeFile(join(ws, 'AGENTS.md'), designAgentsMd(join(this.root, 'node_modules', 'manifold-3d', 'manifold.d.ts')));
+    const blender = await this.blender.status;
+    await rm(join(ws, 'blender'), { force: true });
+    if (blender.available) {
+      await writeFile(join(ws, 'blender'), blenderWrapper(this.blender.bin, join(dirname(this.toolPath), 'blender')));
+      await chmod(join(ws, 'blender'), 0o755);
+    }
+    await writeFile(join(ws, 'AGENTS.md'), designAgentsMd(join(this.root, 'node_modules', 'manifold-3d', 'manifold.d.ts'), blender.available ? blender.version : null));
     const state = {
       frame: 'design',
       design: { script: SCRIPT_FILE, out: 'out' },
@@ -257,6 +291,7 @@ export class Designs {
       name: model.name,
       description: model.design?.description ?? '',
       images: (model.design?.images ?? []).map((n) => `refs/${n}`),
+      parts: 'parts',
       reference: { name: ref.name, topOD: ref.topOD, bottomOD: ref.bottomOD, height: ref.height, notes: ref.notes },
       fit: model.fit,
       params: model.design?.params ?? {},

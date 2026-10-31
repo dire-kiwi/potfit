@@ -131,6 +131,43 @@ export function applyTransform(positions: Float32Array, t: PotTransform, raw?: B
   return applyMatrix(positions, transformMatrix(t, raw ?? computeBounds(positions)));
 }
 
+/** Inverse of a 3x4 row-major affine matrix (its 3x3 part must be invertible). */
+export function invertMatrix(m: number[]): number[] {
+  const [a, b, c, tx, d, e, f, ty, g, h, i, tz] = m;
+  const A = e * i - f * h, B = -(d * i - f * g), C = d * h - e * g;
+  const det = a * A + b * B + c * C;
+  if (!det) throw new Error('the transform is not invertible');
+  const inv = [
+    A, -(b * i - c * h), b * f - c * e,
+    B, a * i - c * g, -(a * f - c * d),
+    C, -(a * h - b * g), a * e - b * d,
+  ].map((v) => v / det);
+  const t = [tx, ty, tz];
+  const out: number[] = [];
+  for (let r = 0; r < 3; r++) {
+    out.push(inv[r * 3], inv[r * 3 + 1], inv[r * 3 + 2], -(inv[r * 3] * t[0] + inv[r * 3 + 1] * t[1] + inv[r * 3 + 2] * t[2]));
+  }
+  return out;
+}
+
+/**
+ * The transform that places a mesh whose bounds changed (it was edited) exactly
+ * where `t` placed it before: `position` refers to the bounding box's bottom
+ * centre, so it moves with the bounds.
+ */
+export function reanchor(t: PotTransform, before: Bounds, after: Bounds): PotTransform {
+  const a = anchorFor(before, t.up), b = anchorFor(after, t.up);
+  const th = (t.spin * Math.PI) / 180;
+  const c = Math.cos(th), s = Math.sin(th);
+  const d = { x: b.x - a.x, y: b.y - a.y, z: b.z - a.z };
+  const spun = { x: c * d.x + s * d.z, y: d.y, z: -s * d.x + c * d.z };
+  return {
+    ...t,
+    position: { x: t.position.x + t.scale.x * spun.x, y: t.position.y + t.scale.y * spun.y, z: t.position.z + t.scale.z * spun.z },
+    scale: { ...t.scale },
+  };
+}
+
 /** Pot frame (Y up) to the Z-up frame slicers expect. */
 export function yUpToZUp(positions: Float32Array): Float32Array {
   const out = new Float32Array(positions.length);
@@ -138,6 +175,17 @@ export function yUpToZUp(positions: Float32Array): Float32Array {
     out[i] = positions[i];
     out[i + 1] = -positions[i + 2];
     out[i + 2] = positions[i + 1];
+  }
+  return out;
+}
+
+/** The inverse of yUpToZUp. */
+export function zUpToYUp(positions: Float32Array): Float32Array {
+  const out = new Float32Array(positions.length);
+  for (let i = 0; i < positions.length; i += 3) {
+    out[i] = positions[i];
+    out[i + 1] = positions[i + 2];
+    out[i + 2] = -positions[i + 1];
   }
   return out;
 }

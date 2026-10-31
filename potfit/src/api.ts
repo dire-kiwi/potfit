@@ -73,6 +73,8 @@ export const api = {
   designScriptUrl: (id: string) => `/api/models/${id}/design/script`,
   designImageUrl: (id: string, name: string) => `/api/models/${id}/design/refs/${encodeURIComponent(name)}`,
   cancelRun: (id: string) => request<{ cancelled: boolean }>('POST', `/api/models/${id}/runs/cancel`),
+  /** Undo a fit run that edited the mesh. */
+  revertRun: (id: string, runId: string) => request<PotModel>('POST', `/api/models/${id}/runs/${runId}/revert`),
   rateRun: (id: string, runId: string, rating: CodexRun['rating']) => request<CodexRun>('PATCH', `/api/models/${id}/runs/${runId}`, { rating }),
 
   /** Stream a run's events (replayed from the start). Returns a function that stops listening. */

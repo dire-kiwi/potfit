@@ -15,7 +15,53 @@ export const DESIGN_SCHEMA = {
   },
 };
 
-export function designAgentsMd(manifoldTypes: string): string {
+/** Making parts with Blender, for AGENTS.md. */
+function blenderParts(blender: string | null): string {
+  if (!blender) {
+    return `### Parts from Blender
+
+Blender isn't installed on this server, so build everything in design.mjs.
+`;
+  }
+  return `### Parts from Blender
+
+${blender} runs headless here as \`./blender\`. Use it when a shape is
+easier to model in Blender than in code: sculpted or organic features, text,
+shapes from curves, modifiers (bevel, solidify, subdivision, remesh), or
+cleaning up a part. Write a Blender script that builds the part and saves it
+in parts/, then load it in the design with \`lib.part("name.stl")\` and
+combine it with the rest:
+
+\`\`\`python
+# ears.py: ./blender -P ears.py -- 9   (the part's size, from a param, say)
+import potfit_bpy as pb
+size = float(pb.args()[0])
+pb.reset()
+ear = pb.cylinder(size, 0, 3, segments=64)
+# ... shape it with bpy: modifiers, sculpting, curves ...
+print(pb.report(ear))  # must be a closed solid
+pb.save(ear, "parts/ear.stl")
+\`\`\`
+
+- Parts are in the design frame: millimetres, +Z up (Blender's), the pot's
+  axis on x = y = 0, the front facing -Y. Model them in place, or move them in
+  design.mjs with \`.translate\`, \`.rotate\`, \`.scale\` and \`.mirror\`.
+- \`potfit_bpy\` (import potfit_bpy as pb; open its file to see it all) has
+  \`pb.reset()\`, \`pb.load\`, \`pb.save\`, \`pb.boolean\`, \`pb.cylinder\`,
+  \`pb.box\`, \`pb.clean\` and \`pb.report\` (closed solid or not). Anything
+  else is plain bpy.
+- A part must be a closed solid, or the build fails. Keep it under about
+  100k triangles (decimate if needed): it is unioned with the design.
+- The build reads parts/ but can't run Blender, so a part is fixed: a param
+  can move, scale or switch it, not reshape it. Keep the Blender scripts in
+  this directory so you can change and rerun them, and remember that the
+  user's params can't regenerate a part.
+- Prefer design.mjs when the shape is easy there (lathe, radial, SDF):
+  that stays adjustable.
+`;
+}
+
+export function designAgentsMd(manifoldTypes: string, blender: string | null): string {
   return `# Pot design workspace
 
 You design decorative outer pots (cachepots) for 3D printing. Each one holds a
@@ -35,7 +81,9 @@ send you feedback.
 - \`out/\`: what \`./pot-tool build\` and \`preview\` write: design.stl,
   report.json, preview.png, section.png.
 - \`./pot-tool\`: \`build\`, \`preview\`, \`check\`, \`render\` (\`./pot-tool help\`).
-
+- \`parts/\`: STL parts for \`lib.part\`, made with Blender (see Parts from
+  Blender). Create it when you need it.
+${blender ? '- `./blender`: headless Blender, for making parts.\n' : ''}
 ## Design frame
 
 Millimetres, +Z up, the base on z = 0, and the pot's axis on x = y = 0: the
@@ -105,6 +153,8 @@ on z = 0 with the cavity cut by \`L.cavity()\`.
   \`lib.torus(c, R, r, { rotate })\` (around Z unless rotated).
 - \`lib.symmetric(m)\`: m plus its mirror across x = 0, for left/right pairs.
 - \`lib.union([...])\`.
+- \`lib.part("name.stl")\`: a closed STL mesh from parts/ (see Parts from
+  Blender), as a Manifold.
 - \`lib.fromSDF(fn, { min, max }, edge = 0.6)\`: mesh a signed distance
   function (negative inside) over a box. Keep the shape inside the box. edge
   0.4 to 1 mm; finer is slower (about a second per 10M cells).
@@ -127,6 +177,7 @@ For characters and other organic shapes, build the body and limbs as one
 smooth-unioned SDF (sdf.lathe for the body), mesh it with lib.fromSDF, then cut
 precise features (eyes, mouth, cavity) with lib/M booleans.
 
+${blenderParts(blender)}
 ### M, CS
 
 The manifold-3d Manifold and CrossSection classes, for anything else:

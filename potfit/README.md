@@ -13,7 +13,10 @@ the start. Either way the result exports as an STL ready for a slicer.
 
 Needs Node 23.6 or newer (the server and tools run TypeScript directly; tested
 on Node 26) and the [Codex CLI](https://github.com/openai/codex) on the `PATH`,
-logged in.
+logged in. [Blender](https://www.blender.org) 4.1 or newer on the `PATH` is
+optional: with it, Codex can edit an imported pot's mesh (fill the space under
+the nursery pot, say) and model parts for designed pots. potfit checks for it
+when it starts, and the Codex panel shows its version.
 
 ```sh
 cd potfit
@@ -37,6 +40,7 @@ npm start          # http://localhost:5174
 | `POTFIT_CODEX_BIN` | `codex` | Codex executable |
 | `POTFIT_CODEX_MODEL` | Codex's configured default | Model passed to `codex exec -m` |
 | `POTFIT_CODEX_SANDBOX` | `workspace-write` | Codex's `sandbox_mode` for every run: `read-only`, `workspace-write` or `danger-full-access` |
+| `POTFIT_BLENDER_BIN` | `blender` | Blender executable, run headless (`-b`) for mesh edits and design parts |
 
 The API has no authentication, and it runs Codex as you with read access to
 your whole filesystem. Anyone who can reach it can have Codex read your files
@@ -72,6 +76,11 @@ Codex run any command in the container.
    use the quick phrases. Codex gets your current placement, including any
    manual moves, and fresh screenshots of both views. If you ask for different
    goals ("leave 2 mm for drainage"), Codex updates the fit settings too.
+   If you ask for a change to the shape itself ("fill the empty space under
+   the nursery pot", "close the drainage hole") and Blender is installed,
+   Codex edits the mesh in Blender. The edited mesh replaces the model's, and
+   the result says how many triangles it has now. *Revert* puts back the
+   mesh as well as the placement.
 6. **Review** starts a separate Codex session that checks the fit as it
    stands now. It sees only the result: the placed pot, the reference pot, the
    goals and screenshots of both views. It never sees the fitting conversation.
@@ -146,14 +155,30 @@ runs in (`codex exec --json`, sandbox `workspace-write`). It holds:
 - `AGENTS.md`: the task, the coordinate conventions and the rules
 - `pot-tool`: a wrapper for `tools/pot-tool.ts`, with `analyze` (orientation
   candidates and the cavity profile), `solve` (the deterministic fit), `check`
-  (gaps, rim offset, floor gap, interference, wall and floor thickness) and
-  `render` (a PNG section Codex can look at)
+  (gaps, rim offset, floor gap, interference, wall and floor thickness),
+  `render` (a PNG section Codex can look at), and `place` and `unplace` (see
+  below)
+- `blender`, when Blender is installed: headless Blender with
+  `tools/blender/potfit_bpy.py` importable, which has helpers for loading and
+  saving STLs, booleans, checking that a mesh is a closed solid and
+  `fill_cavity` (fill a cavity from its floor up to a height, following the
+  walls whatever their shape)
 
 Codex answers with JSON matching an output schema: a transform, the fit goals
 it used, a summary, warnings and a confidence. The server re-measures that
 transform itself before applying it. Feedback resumes the same thread with
 `codex exec resume`. Every run keeps its prompt, the images sent, the event
 log and the result under `data/models/<id>/runs/<runId>/`.
+
+To change the shape, Codex runs `pot-tool place --z-up`, which writes the pot
+as placed, turned Z up for Blender, with the nursery pot's base centre at the
+origin. It edits that in Blender, and `pot-tool unplace` turns the result back
+into the raw coordinates of `mesh.stl` and prints the transform that leaves it
+where it was edited. The answer then names the edited STL in `editedMesh`. The
+server reads it (it has to be inside the workspace), keeps the old mesh as
+`mesh-before.stl` in the run's directory, and makes the edited one the model's
+mesh. Reverting the run puts `mesh-before.stl` back. An edit is stored
+unscaled, so if the fit is rescaled later the edit scales with it.
 
 A review runs in a fresh `workspace/` inside its run directory. It has its own
 `AGENTS.md`, `fitted.stl` (the model already placed in the pot frame, deleted
@@ -178,6 +203,10 @@ always give watertight meshes. It gets a toolkit (`tools/potlib.ts`):
   twisted, faceted, lobed and ribbed shapes, spheres, boxes, capsules, tubes
   along paths, tori, mirrored pairs, and meshing a signed distance function,
   which blends parts with fillets like a sculpt.
+- `lib.part("name.stl")`: a closed STL from the design's `parts/` folder,
+  which Codex models in Blender when a shape is easier there (sculpted
+  features, text, modifiers). The build can read parts but can't run
+  Blender, so a parameter can move, scale or switch a part but not reshape it.
 - `params`: the settings the Design panel shows.
 
 The design frame is millimetres, +Z up, the base on z = 0 and the nursery
@@ -185,8 +214,9 @@ pot's axis on x = y = 0, with the front facing -Y. The server places the built
 mesh at scale 1 with the nursery pot lowered into the cavity until it rests.
 
 Codex works in `data/models/<id>/design/`, which holds `design.mjs`, `refs/`
-(the user's images), `state.json`, an `AGENTS.md` describing the toolkit and
-printing rules, and `pot-tool`, with two extra commands:
+(the user's images), `parts/` (STL parts, if any), `state.json`, an
+`AGENTS.md` describing the toolkit and printing rules, `blender` (as for
+fitting) and `pot-tool`, with two extra commands:
 
 - `build` runs the script and reports the size, material, pieces, overhangs
   steeper than 45° (by height and side) and the fit around the nursery pot.
@@ -197,12 +227,13 @@ printing rules, and `pot-tool`, with two extra commands:
 
 When Codex finishes, the server builds the script itself and makes it the
 model's mesh; if it fails, the previous script is put back and Codex's version
-is kept as `failed.mjs` for the next turn. Each run keeps the script from
-before and after it under `runs/<runId>/`.
+is kept as `failed.mjs` for the next turn. Each run keeps the script and
+parts from before and after it under `runs/<runId>/`, and putting a run back
+restores both.
 
 The server runs design scripts in a child Node process under the permission
-model (`--permission`). The script can read only the build code, manifold-3d
-and itself, write only its output directory, and has no network,
+model (`--permission`). The script can read only the build code, manifold-3d,
+itself and its `parts/`, write only its output directory, and has no network,
 subprocesses, workers or environment variables. A build is stopped after
 two minutes.
 
@@ -246,7 +277,8 @@ clearance, standing 8 mm proud. The solver gives scale 1.000 for both.
 ```
 shared/   types, transforms, STL I/O, slicing, analysis, check and solver
 server/   Express API, file store, designs, Codex runner and prompts
-tools/    pot-tool CLI, PNG renderers, the design toolkit (potlib.ts), build and starter script
+tools/    pot-tool CLI, PNG renderers, the design toolkit (potlib.ts), build and starter script,
+          and blender/potfit_bpy.py (Blender helpers for Codex)
 src/      React UI, three.js viewer (viewer/PotViewer.ts), importers, worker
 test/     node --test suites (npm test)
 ```

@@ -80,8 +80,10 @@ Measured cavities, from `macetas_vs_v3_dimensions.json`:
 3MF, OBJ, GLB, PLY) around a saved reference nursery pot. Codex does the
 fitting; you review it in 3D and section views, give feedback or adjust it by
 hand, and export the result. Codex can also design a new pot from a
-description or reference pictures, built around the nursery pot. See
-[potfit/README.md](potfit/README.md).
+description or reference pictures, built around the nursery pot. Where
+Blender is installed, Codex also uses it headless to change an imported pot's
+shape (filling the space under the nursery pot, say) and to model parts for
+designed pots. See [potfit/README.md](potfit/README.md).
 
 ## Notes
 
