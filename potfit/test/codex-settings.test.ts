@@ -76,9 +76,39 @@ process.exit(1);
   const blender = { bin: 'blender', status: Promise.resolve({ available: false, version: null, error: 'unused' }) };
   const designs = new Designs(store, { root, toolPath: join(root, 'tools/pot-tool.ts'), blender });
   const runner = new CodexRunner(store, designs, { bin, model: 'server-model', sandbox: 'workspace-write', toolPath: join(root, 'tools/pot-tool.ts'), blender });
+  // Cancellation must survive preparation before active-run registration.
+  for (const pauseAt of ['getModel', 'getReference', 'saveRun'] as const) {
+    const controller = new AbortController();
+    let reached!: () => void;
+    const paused = new Promise<void>(resolve => { reached = resolve; });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const original = store[pauseAt].bind(store);
+    // Each method is gated independently, preserving its original arguments/results.
+    const access = store as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
+    access[pauseAt] = async (...args: unknown[]) => {
+      reached(); await gate;
+      return (original as (...args: unknown[]) => Promise<unknown>)(...args);
+    };
+    const starting = runner.start(model.id, { mode: 'feedback', message: 'Cancelled', images: [] }, controller.signal);
+    const outcome = starting.then(run => run, error => error);
+    await paused;
+    controller.abort();
+    release();
+    const result = await outcome;
+    access[pauseAt] = original as (...args: unknown[]) => Promise<unknown>;
+    if (pauseAt === 'saveRun') {
+      assert.equal(result.status, 'cancelled');
+      assert.equal(await readFile(join(store.runDir(model.id, result.id), 'argv.json')).then(() => true, () => false), false);
+    } else {
+      assert.equal(result.name, 'AbortError');
+    }
+    assert.equal(runner.activeRun(model.id), null);
+    assert.deepEqual((await store.getModel(model.id)).transform, model.transform);
+  }
   for (const mode of ['fit', 'feedback', 'review'] as const) {
     const overrides = mode === 'review' ? {} : { model: 'custom-model', effort: 'high' as const };
-    const run = await runner.start(model.id, { mode, message: 'Test', images: [], ...overrides });
+    const run = await runner.start(model.id, { mode, message: 'Test', images: mode === 'review' ? [{ name: 'target', ext: 'png', data: Buffer.from('target') }, { name: 'produced', ext: 'png', data: Buffer.from('produced') }] : [], visualReview: mode === 'review' ? 'Compare target and produced independently.' : undefined, ...overrides });
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('Fake Codex timed out')), 5000);
       if (!runner.subscribe(model.id, run.id, (event) => {
@@ -92,5 +122,11 @@ process.exit(1);
     assert.equal(args.includes('model_reasoning_effort="high"'), mode !== 'review');
     assert.equal(args.includes('resume'), mode === 'feedback');
     assert.equal(args.includes('--ephemeral'), mode === 'review');
+    if (mode === 'review') {
+      assert.equal(args.at(-1), 'Compare target and produced independently.');
+      assert.equal(args.filter(arg => arg === '-i').length, 2);
+      assert.equal(await readFile(join(store.runDir(model.id, run.id), 'images/target.png'), 'utf8'), 'target');
+      assert.equal(await readFile(join(store.runDir(model.id, run.id), 'images/produced.png'), 'utf8'), 'produced');
+    }
   }
 });

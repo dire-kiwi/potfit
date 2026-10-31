@@ -350,3 +350,12 @@ export interface ServerStatus {
   blender: { available: boolean; version: string | null; error: string | null };
   dataDir: string;
 }
+
+export interface ScreenshotReview {
+  id: string;
+  status: 'running' | 'done' | 'limit' | 'cancelled' | 'error';
+  round: number;
+  phase: string;
+  error: string | null;
+  rounds: { round: number; reviews: { focus: string; runId: string; result: ReviewResult }[]; workerRunId?: string }[];
+}

@@ -42,10 +42,13 @@ interface ActiveRun {
   events: CodexEvent[];
   listeners: Set<(e: CodexEvent) => void>;
   cancelled: boolean;
+  removeAbortListener?: () => void;
 }
 
 export interface StartInput extends CodexSettings {
   mode: CodexRunKind;
+  /** Internal screenshot reviewer instructions; never supplied by the runs API. */
+  visualReview?: string;
   message: string;
   /** Screenshots of the app's views. */
   images: DesignImage[];
@@ -236,11 +239,15 @@ export class CodexRunner {
     return true;
   }
 
-  async start(modelId: string, input: StartInput): Promise<CodexRun> {
+  async start(modelId: string, input: StartInput, signal?: AbortSignal): Promise<CodexRun> {
     if (this.active.has(modelId)) throw new Conflict('Codex is already working on this model');
+    signal?.throwIfAborted();
     const settings = parseCodexSettings(input);
     const model = await this.store.getModel(modelId);
+    signal?.throwIfAborted();
     const ref = model.fit.referenceId ? await this.store.getReference(model.fit.referenceId) : null;
+    signal?.throwIfAborted();
+    if (this.active.has(modelId)) throw new Conflict('Codex is already working on this model');
     const verb = input.mode === 'review' ? 'review' : isDesignRun(input.mode) ? 'design' : 'fit';
     if (!ref) throw new BadRequest(`Choose a reference pot before asking Codex to ${verb} the model`);
     if (isDesignRun(input.mode) && !model.design) throw new BadRequest('This model was imported; only designed pots can be redesigned');
@@ -274,8 +281,17 @@ export class CodexRunner {
     };
     const active: ActiveRun = { run, child: null, events: [], listeners: new Set(), cancelled: false };
     this.active.set(modelId, active);
+    if (signal) {
+      const abort = () => { this.cancel(modelId); };
+      signal.addEventListener('abort', abort, { once: true });
+      active.removeAbortListener = () => signal.removeEventListener('abort', abort);
+    }
     try {
       await this.store.saveRun(run);
+      if (active.cancelled) {
+        await this.finish(active, { status: 'cancelled', error: null });
+        return run;
+      }
       await this.launch(active, model, ref, input);
     } catch (e) {
       await this.finish(active, { status: 'error', error: (e as Error).message });
@@ -397,6 +413,7 @@ export class CodexRunner {
       ws = prepared.ws;
       prompt = reviewPrompt(ref, model.fit, prepared.design, shots.map((s) => s.name.replace(/\.\w+$/, '')));
       schema = REVIEW_SCHEMA;
+      if (input.visualReview) prompt = input.visualReview;
     } else {
       ws = await this.prepareWorkspace(model, ref);
       const names = shots.map((s) => s.name.replace(/\.\w+$/, ''));
@@ -434,6 +451,7 @@ export class CodexRunner {
       text: `Model: ${run.settings?.model || 'Codex default'} · reasoning effort: ${run.settings?.effort || 'Codex default'}`,
     });
 
+    if (a.cancelled) return this.finish(a, { status: 'cancelled', error: null });
     const child = spawn(this.opts.bin, args, { cwd: ws, stdio: ['ignore', 'pipe', 'pipe'], env: process.env });
     a.child = child;
     const stderr: string[] = [];
@@ -602,6 +620,7 @@ export class CodexRunner {
     await this.store.saveRun(a.run).catch(() => undefined);
     this.emit(a, { type: 'status', status: a.run.status, error: a.run.error });
     this.emit(a, { type: 'result', run: a.run });
+    a.removeAbortListener?.();
     this.active.delete(a.run.modelId);
     a.listeners.clear();
   }

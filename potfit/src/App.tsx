@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'r
 import { REASONING_EFFORTS } from '../shared/types.ts';
 import { parseSTL, writeBinarySTL } from '../shared/stl.ts';
 import { cloneTransform, transformsEqual } from '../shared/transform.ts';
-import type { CodexSettings, CodexEvent, CodexRun, FitMetrics, FitSettings, ParamValues, PotModel, PotTransform, ReferencePot, ServerStatus } from '../shared/types.ts';
+import type { ScreenshotReview, CodexSettings, CodexEvent, CodexRun, FitMetrics, FitSettings, ParamValues, PotModel, PotTransform, ReferencePot, ServerStatus } from '../shared/types.ts';
 import { api, type ModelPatchBody } from './api.ts';
 import { CodexPanel } from './components/CodexPanel.tsx';
 import { DesignDialog } from './components/DesignDialog.tsx';
@@ -12,6 +12,7 @@ import type { PickedImage } from './components/ImagePicker.tsx';
 import { ImportDialog, type PendingImport } from './components/ImportDialog.tsx';
 import { ModelList } from './components/ModelList.tsx';
 import { ReferencePanel } from './components/ReferencePanel.tsx';
+import { ScreenshotReviewPanel } from './components/ScreenshotReviewPanel.tsx';
 import { ReviewPanel } from './components/ReviewPanel.tsx';
 import type { LogEntry } from './components/RunLog.tsx';
 import { GeometryClient } from './geometry.ts';
@@ -64,8 +65,17 @@ export function App() {
   const [runs, setRuns] = useState<CodexRun[]>([]);
   const [activeRun, setActiveRun] = useState<CodexRun | null>(null);
   const [logs, setLogs] = useState<Record<string, LogEntry[]>>({});
-  const [instructionsDraft, setInstructionsDraft] = useState('');
-  const [feedbackDraft, setFeedbackDraft] = useState('');
+  const [drafts, setDrafts] = useState<Record<string, { instructions: string; feedback: string }>>({});
+  const instructionsDraft = drafts[selectedId ?? '']?.instructions ?? '';
+  const feedbackDraft = drafts[selectedId ?? '']?.feedback ?? '';
+  const setDraft = (key: 'instructions' | 'feedback', text: string) => {
+    if (selectedId) setDrafts(ds => ({ ...ds, [selectedId]: { ...(ds[selectedId] ?? { instructions: '', feedback: '' }), [key]: text } }));
+  };
+  const setInstructionsDraft = (text: string) => setDraft('instructions', text);
+  const setFeedbackDraft = (text: string) => setDraft('feedback', text);
+  const [loopRunning, setLoopRunning] = useState(false);
+  const [startingReview, setStartingReview] = useState(false);
+  const loopVersion = useRef('');
   const [pendingImport, setPendingImport] = useState<PendingImport | null>(null);
   const [designing, setDesigning] = useState(false);
   const [building, setBuilding] = useState(false);
@@ -90,7 +100,8 @@ export function App() {
   const pendingSave = useRef<{ id: string; patch: ModelPatchBody; timer: number } | null>(null);
   const meshReady = useRef<Promise<unknown>>(Promise.resolve());
   const frameOnLoad = useRef(false);
-  const unsubscribe = useRef<(() => void) | null>(null);
+  const subscriptions = useRef(new Map<string, () => void>());
+  useEffect(() => () => { for (const off of subscriptions.current.values()) off(); }, []);
 
   const reference = references.find((r) => r.id === model?.fit.referenceId) ?? null;
   // One Codex run per model at a time. Reviews work on a copy of the fit, so
@@ -99,22 +110,29 @@ export function App() {
   const reviewRuns = runs.filter((r) => r.kind === 'review');
   const fitActive = activeRun && activeRun.kind !== 'review' ? activeRun : null;
   const reviewActive = activeRun && activeRun.kind === 'review' ? activeRun : null;
-  const locked = !!fitActive || building;
+  const locked = !!fitActive || building || loopRunning || startingReview;
 
   const fail = (e: unknown) => setError((e as Error).message ?? String(e));
 
   // ------------------------------------------------------------ saving
 
+  const saving = useRef<Promise<void>>(Promise.resolve());
   const flushSave = useCallback(async () => {
     const p = pendingSave.current;
-    if (!p) return;
-    pendingSave.current = null;
-    clearTimeout(p.timer);
+    if (p) {
+      pendingSave.current = null;
+      clearTimeout(p.timer);
+      saving.current = saving.current.catch(() => undefined).then(async () => {
+        const saved = await api.patchModel(p.id, p.patch);
+        setModels((ms) => ms.map((m) => (m.id === saved.id ? saved : m)));
+      });
+    }
     try {
-      const saved = await api.patchModel(p.id, p.patch);
-      setModels((ms) => ms.map((m) => (m.id === saved.id ? saved : m)));
+      await saving.current;
+      return true;
     } catch (e) {
       fail(e);
+      return false;
     }
   }, []);
 
@@ -168,7 +186,7 @@ export function App() {
   const redo = useCallback(() => step('future'), [step]);
 
   const updateFit = (patch: Partial<FitSettings>) => {
-    if (!model) return;
+    if (!model || loopRunning || startingReview) return;
     setModel({ ...model, fit: { ...model.fit, ...patch } });
     scheduleSave(model.id, { fit: patch });
   };
@@ -242,17 +260,19 @@ export function App() {
   );
 
   const subscribe = useCallback((modelId: string, run: CodexRun) => {
-    unsubscribe.current?.();
+    if (subscriptions.current.has(run.id)) return;
     setLogs((l) => ({ ...l, [run.id]: [] }));
-    unsubscribe.current = api.runEvents(
+    subscriptions.current.set(run.id, api.runEvents(
       modelId,
       run.id,
       (e) => {
         setLogs((l) => ({ ...l, [run.id]: addToLog(l[run.id] ?? [], e) }));
         if (e.type === 'result') {
           const finished = e.run;
-          setActiveRun(null);
-          setRuns((rs) => [...rs.filter((r) => r.id !== finished.id), finished]);
+          if (modelRef.current?.id === modelId) {
+            setActiveRun(null);
+            setRuns((rs) => [...rs.filter((r) => r.id !== finished.id), finished]);
+          }
           // Reviews never change the model, and the user may have been editing
           // it during the review (possibly with a save still pending), so the
           // server's copy must not overwrite what's on screen.
@@ -274,20 +294,19 @@ export function App() {
           });
         }
       },
-      () => undefined,
-    );
+      () => { subscriptions.current.delete(run.id); },
+    ));
   }, [setTransform, showRebuilt]);
 
   useEffect(() => {
-    unsubscribe.current?.();
-    unsubscribe.current = null;
+    loopVersion.current = '';
+    setLoopRunning(false);
+    modelRef.current = null;
     setModel(null);
     setPositions(null);
     setMetrics(null);
     setRuns([]);
     setActiveRun(null);
-    setInstructionsDraft('');
-    setFeedbackDraft('');
     history.current = { past: [], future: [] };
     bumpHistory();
     viewer.current?.setMesh(null);
@@ -468,8 +487,8 @@ export function App() {
 
   const startCodex = async (mode: CodexRun['kind'], message: string, attachments: PickedImage[] = []) => {
     if (!model || !viewer.current) return;
-    await flushSave();
     const shots = viewer.current.capture();
+    await flushSave();
     const run = await api.startRun(model.id, {
       ...codexSettings,
       mode,
@@ -481,10 +500,10 @@ export function App() {
       attachments: attachments.map((a) => ({ name: a.name, dataUrl: a.dataUrl })),
     });
     if (run.status === 'running') {
-      setActiveRun(run);
+      if (modelRef.current?.id === model.id) setActiveRun(run);
       subscribe(model.id, run);
     } else {
-      setRuns((rs) => [...rs, run]);
+      if (modelRef.current?.id === model.id) setRuns((rs) => [...rs, run]);
       if (run.error) throw new Error(run.error);
     }
   };
@@ -551,15 +570,33 @@ export function App() {
     );
   };
 
+  const onLoopUpdate = useCallback((state: ScreenshotReview | null) => {
+    setLoopRunning(state?.status === 'running');
+    const id = modelRef.current?.id;
+    const version = JSON.stringify(state);
+    const changed = loopVersion.current !== version;
+    if (!id || (!changed && state?.status !== 'running')) return;
+    loopVersion.current = version;
+    if (!state) return;
+    void Promise.all([api.model(id), api.runs(id)]).then(async ([fresh, rs]) => {
+      if (modelRef.current?.id !== id) return;
+      setRuns(rs.filter(r => r.id !== fresh.activeRun?.id));
+      setActiveRun(fresh.activeRun);
+      if (fresh.activeRun) subscribe(id, fresh.activeRun);
+      if (changed) await showRebuilt(fresh.model);
+    }).catch(fail);
+  }, [subscribe, showRebuilt]);
+
   const codexPanel = model && (
     <CodexPanel
+      key={model.id}
       settings={codexSettings}
       onSettings={changeCodexSettings}
       status={status}
       model={model}
       hasReference={!!reference}
       activeRun={fitActive}
-      reviewRunning={!!reviewActive}
+      reviewRunning={!!reviewActive || loopRunning || startingReview}
       runs={fitRuns}
       logs={logs}
       instructions={instructionsDraft}
@@ -696,7 +733,7 @@ export function App() {
         {model ? (
           <>
             {model.design && (
-              <DesignPanel key={model.id} model={model} references={references} lockedBy={activeRun?.kind ?? null} building={building} onBuild={buildDesign} />
+              <DesignPanel key={model.id} model={model} references={references} lockedBy={activeRun?.kind ?? (loopRunning || startingReview ? 'feedback' : null)} building={building} onBuild={buildDesign} />
             )}
             {model.design && codexPanel}
             <FitPanel
@@ -719,6 +756,17 @@ export function App() {
               exportUrl={api.exportUrl(model.id)}
             />
             {!model.design && codexPanel}
+            <ScreenshotReviewPanel key={model.id} modelId={model.id}
+              onStart={async (images) => {
+                setStartingReview(true);
+                try {
+                  if (!await flushSave()) throw new Error('Could not save model edits. Screenshot review was not started.');
+                  const state = await api.startScreenshotReview(model.id, images, codexSettings);
+                  setLoopRunning(state.status === 'running');
+                  return state;
+                } finally { setStartingReview(false); }
+              }}
+              disabled={!!activeRun || building || !reference || !status?.codex.available} onUpdate={onLoopUpdate} />
             <ReviewPanel
               settings={codexSettings}
               onSettings={changeCodexSettings}
@@ -726,7 +774,7 @@ export function App() {
               model={model}
               hasReference={!!reference}
               activeRun={reviewActive}
-              fitRunning={!!fitActive}
+              fitRunning={!!fitActive || loopRunning || startingReview}
               reviews={reviewRuns}
               logs={logs}
               onStart={() => startCodex('review', '')}
