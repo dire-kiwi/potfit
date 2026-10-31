@@ -2,7 +2,8 @@
 
 3D-printable cachepots for cactus nursery pots, modelled procedurally in
 Blender with Python. Each script builds the pot, exports an STL, saves a
-`.blend` scene and renders preview images into this folder.
+`.blend` scene and renders preview images into this folder. The `.blend`
+scenes aren't kept in git, since they're large: run a script to get its scene.
 
 All dimensions are in millimetres (1 Blender unit = 1 mm, STLs are written in mm).
 

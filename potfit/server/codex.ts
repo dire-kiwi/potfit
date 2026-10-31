@@ -20,9 +20,14 @@ import type { Store } from './store.ts';
 export class Conflict extends Error {}
 export class BadRequest extends Error {}
 
+export const SANDBOX_MODES = ['read-only', 'workspace-write', 'danger-full-access'] as const;
+export type SandboxMode = (typeof SANDBOX_MODES)[number];
+
 export interface CodexOptions {
   bin: string;
   model: string | null;
+  /** Codex's sandbox_mode for every run. */
+  sandbox: SandboxMode;
   /** Absolute path of tools/pot-tool.ts. */
   toolPath: string;
 }
@@ -385,7 +390,7 @@ export class CodexRunner {
     const common = [
       '--json',
       '--skip-git-repo-check',
-      '-c', 'sandbox_mode="workspace-write"',
+      '-c', `sandbox_mode="${this.opts.sandbox}"`,
       '--output-schema', schemaPath,
       '-o', lastPath,
       ...(this.opts.model ? ['-m', this.opts.model] : []),

@@ -36,12 +36,20 @@ npm start          # http://localhost:5174
 | `POTFIT_DATA` | `potfit/data` | Where references, models and Codex runs are stored |
 | `POTFIT_CODEX_BIN` | `codex` | Codex executable |
 | `POTFIT_CODEX_MODEL` | Codex's configured default | Model passed to `codex exec -m` |
+| `POTFIT_CODEX_SANDBOX` | `workspace-write` | Codex's `sandbox_mode` for every run: `read-only`, `workspace-write` or `danger-full-access` |
 
 The API has no authentication, and it runs Codex as you with read access to
 your whole filesystem. Anyone who can reach it can have Codex read your files
 and report them back. So it only listens on loopback and only answers requests
 addressed to `localhost`, `127.0.0.1` or `[::1]`. Set `POTFIT_HOST` to another
 address only on a network you trust; the host-name check is then switched off.
+
+Codex's sandbox needs unprivileged user namespaces, which a Docker container
+doesn't allow by default, so Codex can't run its commands there. In a
+container, set `POTFIT_CODEX_SANDBOX=danger-full-access` and let the container
+be the sandbox: give it only potfit's data and Codex's login, and put an
+authenticating proxy in front of it, since anyone who reaches the app can have
+Codex run any command in the container.
 
 ## Using it
 

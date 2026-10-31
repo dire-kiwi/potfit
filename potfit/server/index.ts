@@ -7,7 +7,7 @@ import { analyzeMesh, initialTransform } from '../shared/fit.ts';
 import { parseSTL, writeBinarySTL } from '../shared/stl.ts';
 import { applyTransform, computeBounds, validateTransform, yUpToZUp } from '../shared/transform.ts';
 import { DEFAULT_FIT, type CodexRunKind, type FitSettings, type ModelPatch, type ParamValues, type ReferenceInput, type ServerStatus } from '../shared/types.ts';
-import { BadRequest, CodexRunner, Conflict, codexVersion } from './codex.ts';
+import { BadRequest, CodexRunner, Conflict, SANDBOX_MODES, codexVersion, type SandboxMode } from './codex.ts';
 import { BuildError, DEFAULT_DESIGN_NAME, Designs, type DesignImage } from './design.ts';
 import { NotFound, Store } from './store.ts';
 
@@ -20,6 +20,13 @@ const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
 const loopbackOnly = LOOPBACK_HOSTS.has(host);
 const dataDir = resolve(process.env.POTFIT_DATA ?? join(root, 'data'));
 const codexBin = process.env.POTFIT_CODEX_BIN ?? 'codex';
+// Codex's own sandbox needs user namespaces, which a default Docker container
+// doesn't allow; there the container is the sandbox (danger-full-access).
+const codexSandbox = (process.env.POTFIT_CODEX_SANDBOX || 'workspace-write') as SandboxMode;
+if (!SANDBOX_MODES.includes(codexSandbox)) {
+  console.error(`potfit: POTFIT_CODEX_SANDBOX must be one of ${SANDBOX_MODES.join(', ')}`);
+  process.exit(1);
+}
 
 const store = new Store(dataDir);
 await store.init();
@@ -28,6 +35,7 @@ const designs = new Designs(store, { root, toolPath });
 const codex = new CodexRunner(store, designs, {
   bin: codexBin,
   model: process.env.POTFIT_CODEX_MODEL || null,
+  sandbox: codexSandbox,
   toolPath,
 });
 await codex.recover();
