@@ -1,9 +1,10 @@
 import { useState } from 'react';
+import { CodexControls, type CodexControlsProps } from './CodexControls.tsx';
 import { transformsEqual } from '../../shared/transform.ts';
 import type { CodexRun, PotModel, ReviewResult, ServerStatus } from '../../shared/types.ts';
 import { Elapsed, LogView, type LogEntry } from './RunLog.tsx';
 
-interface Props {
+interface Props extends CodexControlsProps {
   status: ServerStatus | null;
   model: PotModel;
   hasReference: boolean;
@@ -115,6 +116,7 @@ export function ReviewPanel(props: Props) {
         A separate Codex session checks the fit as it stands now. It sees only the placed pot, the reference pot and the goals, not how the fit was made.
       </p>
 
+      <CodexControls settings={props.settings} onSettings={props.onSettings} status={status} disabled={sending || !available || !!activeRun || props.fitRunning} />
       {activeRun ? (
         <div className="active-run">
           <div className="row spread">

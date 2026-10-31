@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { REASONING_EFFORTS } from '../shared/types.ts';
 import { parseSTL, writeBinarySTL } from '../shared/stl.ts';
 import { cloneTransform, transformsEqual } from '../shared/transform.ts';
-import type { CodexEvent, CodexRun, FitMetrics, FitSettings, ParamValues, PotModel, PotTransform, ReferencePot, ServerStatus } from '../shared/types.ts';
+import type { CodexSettings, CodexEvent, CodexRun, FitMetrics, FitSettings, ParamValues, PotModel, PotTransform, ReferencePot, ServerStatus } from '../shared/types.ts';
 import { api, type ModelPatchBody } from './api.ts';
 import { CodexPanel } from './components/CodexPanel.tsx';
 import { DesignDialog } from './components/DesignDialog.tsx';
@@ -38,6 +39,18 @@ function addToLog(entries: LogEntry[], e: CodexEvent): LogEntry[] {
 }
 
 export function App() {
+  const [codexSettings, setCodexSettings] = useState<CodexSettings>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('potfit.codexSettings') ?? '{}');
+      return { model: typeof saved?.model === 'string' ? saved.model : null, effort: REASONING_EFFORTS.includes(saved?.effort) ? saved.effort : null };
+    }
+    catch { return {}; }
+  });
+  const changeCodexSettings = (settings: CodexSettings) => {
+    setCodexSettings(settings);
+    try { localStorage.setItem('potfit.codexSettings', JSON.stringify(settings)); }
+    catch { /* Settings still work if browser storage is unavailable. */ }
+  };
   const [status, setStatus] = useState<ServerStatus | null>(null);
   const [references, setReferences] = useState<ReferencePot[]>([]);
   const [models, setModels] = useState<PotModel[]>([]);
@@ -458,6 +471,7 @@ export function App() {
     await flushSave();
     const shots = viewer.current.capture();
     const run = await api.startRun(model.id, {
+      ...codexSettings,
       mode,
       message,
       images: [
@@ -539,6 +553,8 @@ export function App() {
 
   const codexPanel = model && (
     <CodexPanel
+      settings={codexSettings}
+      onSettings={changeCodexSettings}
       status={status}
       model={model}
       hasReference={!!reference}
@@ -704,6 +720,8 @@ export function App() {
             />
             {!model.design && codexPanel}
             <ReviewPanel
+              settings={codexSettings}
+              onSettings={changeCodexSettings}
               status={status}
               model={model}
               hasReference={!!reference}
@@ -745,6 +763,9 @@ export function App() {
 
       {designing && (
         <DesignDialog
+          settings={codexSettings}
+          onSettings={changeCodexSettings}
+          status={status}
           references={references}
           referenceId={model?.fit.referenceId ?? null}
           codexAvailable={status?.codex.available ?? false}

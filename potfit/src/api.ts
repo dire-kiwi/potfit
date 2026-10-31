@@ -1,5 +1,6 @@
 import type {
   CodexEvent,
+  CodexSettings,
   CodexRun,
   FitSettings,
   ParamValues,
@@ -58,10 +59,10 @@ export const api = {
   exportUrl: (id: string) => `/api/models/${id}/export.stl`,
 
   runs: (id: string) => request<CodexRun[]>('GET', `/api/models/${id}/runs`),
-  startRun: (id: string, body: { mode: CodexRun['kind']; message: string; images: CodexImage[]; attachments?: CodexImage[] }) =>
+  startRun: (id: string, body: CodexSettings & { mode: CodexRun['kind']; message: string; images: CodexImage[]; attachments?: CodexImage[] }) =>
     request<CodexRun>('POST', `/api/models/${id}/runs`, body),
 
-  createDesign: (body: { name: string; description: string; images: CodexImage[]; fit: Partial<FitSettings>; codex: boolean }) =>
+  createDesign: (body: CodexSettings & { name: string; description: string; images: CodexImage[]; fit: Partial<FitSettings>; codex: boolean }) =>
     request<{ model: PotModel; run: CodexRun | null }>('POST', '/api/designs', body),
   buildDesign: (id: string, body: { params?: ParamValues; script?: string }) => request<PotModel>('POST', `/api/models/${id}/design/build`, body),
   revertDesign: (id: string, runId: string) => request<PotModel>('POST', `/api/models/${id}/design/revert`, { runId }),

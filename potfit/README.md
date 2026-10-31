@@ -144,6 +144,25 @@ The server only listens on loopback by default, and the Vite dev server
 always does. To use a phone, build the app and run `npm start` with
 `POTFIT_HOST` set to an address the phone can reach (see the warning above).
 
+## Choosing a model and reasoning effort
+
+The **Codex settings** selectors appear in the Codex panel, Review panel and
+New design dialog. Your choices are shared and remembered in this browser.
+They apply to the next fit, design, feedback or review, including resumed
+conversations; changing them does not change a run already in progress.
+
+**Server default** uses `POTFIT_CODEX_MODEL` when configured; **Codex default**
+leaves the choice to Codex. The effort default also leaves it to Codex.
+Explicit choices are passed as `-m <model>` and
+`-c 'model_reasoning_effort="<effort>"'`, and saved with each run and in its log.
+See the [official Codex configuration reference](https://developers.openai.com/codex/config-reference/).
+
+Model choices and their effort levels come from the server's optional Codex
+`models_cache.json` catalog in `CODEX_HOME` (or `~/.codex`). The catalog may be
+missing or stale; **Custom model…** lets you enter another model ID. Codex must
+have access to that model, and it must support the selected effort. Changing
+the model resets the effort selector to its default.
+
 ## How the Codex fit works
 
 Each model gets a working directory, `data/models/<id>/codex/`, that Codex

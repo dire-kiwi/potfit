@@ -11,6 +11,7 @@ import { blenderVersion } from './blender.ts';
 import { BadRequest, CodexRunner, Conflict, SANDBOX_MODES, codexVersion, type SandboxMode } from './codex.ts';
 import { BuildError, DEFAULT_DESIGN_NAME, Designs, type DesignImage } from './design.ts';
 import { NotFound, Store } from './store.ts';
+import { codexModels, parseCodexSettings } from './codex-settings.ts';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const port = Number(process.env.POTFIT_PORT ?? 5174);
@@ -133,7 +134,7 @@ const RUN_KINDS: CodexRunKind[] = ['fit', 'feedback', 'review', 'design', 'desig
 // ---------------------------------------------------------------- status
 
 app.get('/api/status', route(async (_req, res) => {
-  const status: ServerStatus = { codex: await codexVersion(codexBin), blender: await blender.status, dataDir };
+  const status: ServerStatus = { codex: { ...await codexVersion(codexBin), defaultModel: process.env.POTFIT_CODEX_MODEL || null, models: await codexModels() }, blender: await blender.status, dataDir };
   res.json(status);
 }));
 
@@ -197,13 +198,14 @@ app.post('/api/designs', route(async (req, res) => {
   const description = typeof b.description === 'string' ? b.description.trim() : '';
   const images = decodeImages(b.images, 8);
   const useCodex = b.codex !== false;
+  const settings = parseCodexSettings(b);
   if (useCodex && !description && images.length === 0) throw new BadRequest('Describe the pot or add a reference image');
   const fit: FitSettings = { ...DEFAULT_FIT, referenceId: await defaultReferenceId(), ...fitPatch(b.fit) };
   const ref = fit.referenceId ? await store.getReference(fit.referenceId) : null;
   if (!ref) throw new BadRequest('Choose a reference pot for the design');
   const name = typeof b.name === 'string' && b.name.trim() ? b.name.trim() : DEFAULT_DESIGN_NAME;
   const model = await designs.create({ name, description, images, fit, ref });
-  const run = useCodex ? await codex.start(model.id, { mode: 'design', message: description, images: [] }) : null;
+  const run = useCodex ? await codex.start(model.id, { mode: 'design', message: description, images: [], ...settings }) : null;
   res.status(201).json({ model, run });
 }));
 
@@ -273,6 +275,7 @@ app.post('/api/models/:id/runs', route(async (req, res) => {
   const b = (req.body ?? {}) as Record<string, unknown>;
   const mode = RUN_KINDS.includes(b.mode as CodexRunKind) ? (b.mode as CodexRunKind) : 'fit';
   const run = await codex.start(param(req, 'id'), {
+    ...parseCodexSettings(b),
     mode,
     message: typeof b.message === 'string' ? b.message : '',
     images: decodeImages(b.images, 4),
