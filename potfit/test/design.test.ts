@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { checkFit, placeDesign } from '../shared/fit.ts';
-import { parseSTL } from '../shared/stl.ts';
+import { parseSTL, writeBinarySTL } from '../shared/stl.ts';
 import { DEFAULT_FIT, type ReferencePot } from '../shared/types.ts';
 import { buildDesign, overhangs } from '../tools/design-build.ts';
 import { normaliseParams, resolveParams, type DesignInput } from '../tools/potlib.ts';
@@ -144,7 +144,7 @@ test('design answers are parsed leniently', () => {
 test('the server builds scripts in a locked-down process', async () => {
   const store = new Store(mkdtempSync(join(tmpdir(), 'potfit-store-')));
   await store.init();
-  const designs = new Designs(store, { root, toolPath: join(root, 'tools', 'pot-tool.ts') });
+  const designs = new Designs(store, { root, toolPath: join(root, 'tools', 'pot-tool.ts'), blender: { bin: 'blender', status: Promise.resolve({ available: false, version: null, error: 'not needed' }) } });
   const ref = await store.createReference({ name: '6cm', topOD: 60, bottomOD: 40, height: 55, notes: '' });
   const fit = { ...DEFAULT_FIT, referenceId: ref.id, topOffset: 8 };
   const model = await designs.create({ name: 'Test', description: 'plain', images: [{ name: 'a', ext: 'png', data: Buffer.from('x') }], fit, ref: ref as ReferencePot });
@@ -168,8 +168,35 @@ export default function d({ M, note }) {
   const snooped = await designs.rebuild(model.id, { script: snoop });
   assert.deepEqual(snooped.design!.report!.notes, ['ERR_ACCESS_DENIED', 'ERR_ACCESS_DENIED', 'ERR_ACCESS_DENIED']);
 
+  // It can read the design's parts/.
+  mkdirSync(designs.partsDir(model.id));
+  writeFileSync(join(designs.partsDir(model.id), 'cube.stl'), cubeSTL(10));
+  const withPart = await designs.rebuild(model.id, { script: 'export default ({ lib }) => lib.part("cube.stl")' });
+  assert.equal(withPart.triangleCount, 12);
+
   // A script that doesn't build is refused and the old one stays.
   const before = await designs.readScript(model.id);
   await assert.rejects(designs.rebuild(model.id, { script: 'export default () => null' }), BuildError);
   assert.equal(await designs.readScript(model.id), before);
+});
+
+/** A closed axis-aligned cube from z = 0, as STL triangle soup. */
+function cubeSTL(size: number): Uint8Array {
+  const v = (i: number) => [(i & 1) * size - size / 2, ((i >> 1) & 1) * size - size / 2, ((i >> 2) & 1) * size];
+  const quads = [[0, 2, 3, 1], [4, 5, 7, 6], [0, 1, 5, 4], [2, 6, 7, 3], [0, 4, 6, 2], [1, 3, 7, 5]];
+  const tris = quads.flatMap(([a, b, c, d]) => [a, b, c, a, c, d].flatMap(v));
+  return writeBinarySTL(new Float32Array(tris));
+}
+
+test('designs can load closed STL parts, and refuse open ones', async () => {
+  const parts = join(dir, 'parts');
+  mkdirSync(parts, { recursive: true });
+  writeFileSync(join(parts, 'cube.stl'), cubeSTL(20));
+  writeFileSync(join(parts, 'open.stl'), writeBinarySTL(parseSTL(cubeSTL(20)).slice(0, 9 * 10)));
+  const withParts = { ...input(), partsDir: parts };
+  const out = await buildDesign(script('part.mjs', 'export default ({ lib }) => lib.part("cube.stl").add(lib.part("cube.stl").translate([0, 0, 5]))'), withParts);
+  near(out.report.volume, 20 * 20 * 25 / 1000, 1e-6, 'volume');
+  await assert.rejects(buildDesign(script('open.mjs', 'export default ({ lib }) => lib.part("open.stl")'), withParts), /parts\/open.stl is not a closed solid/);
+  await assert.rejects(buildDesign(script('missing.mjs', 'export default ({ lib }) => lib.part("nope.stl")'), withParts), /there is no parts\/nope.stl/);
+  await assert.rejects(buildDesign(script('escape.mjs', 'export default ({ lib }) => lib.part("../x.stl")'), withParts), /name an .stl file/);
 });

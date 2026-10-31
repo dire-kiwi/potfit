@@ -8,6 +8,9 @@
 // this; keep the two in step.
 
 import type { CrossSection, Manifold, ManifoldToplevel, Mat4 } from 'manifold-3d';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { parseSTL } from '../shared/stl.ts';
 import type { DesignParam, ParamValues } from '../shared/types.ts';
 
 export interface DesignInput {
@@ -15,6 +18,8 @@ export interface DesignInput {
   fit: { clearance: number; topOffset: number | null; floorGap: number };
   /** Values the user chose; anything missing or invalid falls back to the script's default. */
   params: ParamValues;
+  /** The design's parts/ folder (STL parts made in Blender, say), if it has one. */
+  partsDir?: string | null;
 }
 
 type P3 = readonly [number, number, number];
@@ -223,7 +228,39 @@ const shapes = {
 export function createContext(wasm: ManifoldToplevel, input: DesignInput, params: ParamValues) {
   const { Manifold: M, CrossSection: CS, Mesh } = wasm;
   const notes: string[] = [];
+  const parts = new Map<string, Manifold>();
   const empty = () => M.cube([0, 0, 0]);
+
+  /** Weld an STL's triangle soup into a Manifold; it must be a closed, consistently oriented solid. */
+  function meshToManifold(positions: Float32Array, label: string): Manifold {
+    if (positions.length === 0) throw new Error(`${label} has no triangles`);
+    const index = new Map<string, number>();
+    const verts: number[] = [];
+    const tris = new Uint32Array(positions.length / 3);
+    for (let i = 0; i < tris.length; i++) {
+      const x = positions[i * 3], y = positions[i * 3 + 1], z = positions[i * 3 + 2];
+      const key = `${x},${y},${z}`;
+      let v = index.get(key);
+      if (v === undefined) {
+        v = verts.length / 3;
+        index.set(key, v);
+        verts.push(x, y, z);
+      }
+      tris[i] = v;
+    }
+    const mesh = new Mesh({ numProp: 3, vertProperties: Float32Array.from(verts), triVerts: tris });
+    mesh.merge();
+    try {
+      const m = new M(mesh);
+      if (m.status() !== 'NoError') throw new Error(String(m.status()));
+      if (m.isEmpty()) throw new Error('it is empty');
+      return m;
+    } catch (e) {
+      throw new Error(
+        `${label} is not a closed solid (${(e as Error).message || e}). In Blender, merge by distance, fill holes and recalculate normals (or voxel remesh) before exporting it`,
+      );
+    }
+  }
   const asManifold = (v: Manifold | Manifold[]) => (Array.isArray(v) ? (v.length ? M.union(v) : empty()) : v);
 
   const ref = input.reference;
@@ -383,6 +420,26 @@ export function createContext(wasm: ManifoldToplevel, input: DesignInput, params
       let m = M.revolve(CS.circle(r, o.tubeSegments ?? 24).translate([R, 0]), o.segments ?? 96);
       if (o.rotate) m = m.rotate([...o.rotate]);
       return m.translate([...center]);
+    },
+    /**
+     * A closed STL mesh from the design's parts/ folder (made in Blender, say),
+     * in the design frame: mm, +Z up. Opened once per build.
+     */
+    part(name: string): Manifold {
+      if (typeof name !== 'string' || !/^[\w.-]+\.stl$/i.test(name)) throw new Error(`lib.part(${JSON.stringify(name)}): name an .stl file in parts/, like "ears.stl"`);
+      let m = parts.get(name);
+      if (!m) {
+        if (!input.partsDir) throw new Error(`lib.part("${name}"): this design has no parts/ folder`);
+        let positions: Float32Array;
+        try {
+          positions = parseSTL(readFileSync(join(input.partsDir, name)));
+        } catch (e) {
+          throw new Error(`lib.part("${name}"): ${(e as NodeJS.ErrnoException).code === 'ENOENT' ? `there is no parts/${name}` : (e as Error).message}`);
+        }
+        m = meshToManifold(positions, `parts/${name}`);
+        parts.set(name, m);
+      }
+      return m;
     },
     /** The part plus its mirror image across x = 0 (left/right pairs). */
     symmetric: (m: Manifold) => m.add(m.mirror([1, 0, 0])),

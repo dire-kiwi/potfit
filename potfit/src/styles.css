@@ -1199,3 +1199,7 @@ textarea.code {
     height: 18px;
   }
 }
+
+.panel > header .row {
+  margin-top: 0;
+}

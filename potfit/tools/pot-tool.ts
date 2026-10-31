@@ -7,7 +7,7 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { analyzeMesh, checkFit, placeDesign, solveFit, type ReferenceDims } from '../shared/fit.ts';
 import { parseSTL, writeBinarySTL } from '../shared/stl.ts';
-import { anchorFor, applyTransform, computeBounds, validateTransform, type Bounds } from '../shared/transform.ts';
+import { anchorFor, applyMatrix, applyTransform, computeBounds, invertMatrix, reanchor, transformMatrix, validateTransform, yUpToZUp, zUpToYUp, type Bounds } from '../shared/transform.ts';
 import { DEFAULT_FIT, type FitMetrics, type FitSettings, type ParamValues, type PotTransform, type ScaleMode, type UpAxis } from '../shared/types.ts';
 import { buildDesign, formatReport } from './design-build.ts';
 import { renderViews, type ViewAngle } from './render3d.ts';
@@ -20,6 +20,9 @@ Commands
   solve     Deterministic fit: scale and place the pot around the reference pot
   check     Measure a transform against the reference pot (gaps, rim offset, floor)
   render    Draw a side-on section of a transform as a PNG
+  place     Write the mesh as placed by a transform, in the pot frame, for editing (Blender)
+  unplace   Turn an edited placed mesh back into the raw coordinates of mesh.stl, and
+            print the transform that puts it back where it was edited
   build     Design workspaces: run the design script and report on the result
   preview   Design workspaces: shaded views of the last build, and its section
 
@@ -42,7 +45,11 @@ Options
   --floor-gap <mm>       gap under the reference pot (default: state.fit.floorGap)
   --angle <deg>          render: section plane angle about the vertical axis (default 0)
   --out <path>           render/preview: output PNG (default section.png / out/preview.png);
-                         build: output directory (default state.design.out)
+                         build: output directory (default state.design.out);
+                         place: placed STL (default placed.stl); unplace: raw STL (default edited.stl)
+  --in <file>            unplace: the edited placed STL
+  --z-up                 place/unplace: the placed STL is Z up (Blender's frame: x, -z, y of the
+                         pot frame), with the reference pot's base centre at the origin
   --script <file>        build: design script (default state.design.script)
   --params <json>        build: parameter values to try, over state.params
   --view <az,el>         preview: one large view from this azimuth and elevation (degrees)
@@ -84,6 +91,8 @@ const { positionals, values } = parseArgs({
     script: { type: 'string' },
     params: { type: 'string' },
     view: { type: 'string' },
+    in: { type: 'string' },
+    'z-up': { type: 'boolean', default: false },
     json: { type: 'boolean', default: false },
     help: { type: 'boolean', short: 'h', default: false },
   },
@@ -198,7 +207,13 @@ async function runBuild(script: string, outDir: string, params: ParamValues) {
   const fit = fitSettings();
   let result;
   try {
-    result = await buildDesign(script, { reference: reference(), fit: { clearance: fit.clearance, topOffset: fit.topOffset, floorGap: fit.floorGap }, params });
+    const parts = join(dirname(script), 'parts');
+    result = await buildDesign(script, {
+      reference: reference(),
+      fit: { clearance: fit.clearance, topOffset: fit.topOffset, floorGap: fit.floorGap },
+      params,
+      partsDir: existsSync(parts) ? parts : null,
+    });
   } catch (e) {
     fail((e as Error).message);
   }
@@ -298,6 +313,48 @@ switch (command) {
       [
         `wrote ${file} (${img.width}x${img.height} px, ${f2(img.pxPerMm)} px/mm, x ${f2(b.minX)}..${f2(b.maxX)}, y ${f2(b.minY)}..${f2(b.maxY)})`,
         'grey fill: outer pot cut faces; red: reference pot; dashed orange: required clearance; dashed blue: reference axis; light grid: 10 mm.',
+      ].join('\n'),
+    );
+    break;
+  }
+  case 'place': {
+    const t = transformArg();
+    const { positions, raw } = loadMesh();
+    const placed = applyTransform(positions, t, raw);
+    const file = resolve(values.out ?? 'placed.stl');
+    writeFileSync(file, writeBinarySTL(values['z-up'] ? yUpToZUp(placed) : placed, 'potfit placed'));
+    const b = computeBounds(placed);
+    const ref = state.reference;
+    const up = values['z-up'] ? 'z' : 'y';
+    out(
+      { file, transform: t, zUp: values['z-up'], bounds: values['z-up'] ? computeBounds(yUpToZUp(placed)) : b },
+      [
+        `wrote ${file}: ${positions.length / 9} triangles placed by ${formatTransform(t)}`,
+        `frame: mm, ${up} up, the reference pot's base centre at the origin and its axis along +${up}${ref ? ` (it reaches ${up} = ${f2(ref.height)})` : ''}`,
+        `the outer pot spans ${up} ${f2(b.min.y)} .. ${f2(b.max.y)}`,
+        `after editing, turn it back with: ./pot-tool unplace --in <edited.stl> --out edited.stl${values['z-up'] ? ' --z-up' : ''}${values.transform ? " --transform '<the same transform>'" : ''}`,
+      ].join('\n'),
+    );
+    break;
+  }
+  case 'unplace': {
+    if (state.placed || state.frame === 'design') fail('unplace is for fit workspaces; here the mesh is already in its working frame');
+    if (!values.in) fail('pass the edited placed STL with --in');
+    const t = transformArg();
+    const { raw } = loadMesh();
+    let placed = parseSTL(readFileSync(resolve(values.in)));
+    if (placed.length === 0) fail(`${values.in} has no triangles`);
+    if (values['z-up']) placed = zUpToYUp(placed);
+    const edited = applyMatrix(placed, invertMatrix(transformMatrix(t, raw)));
+    const file = resolve(values.out ?? 'edited.stl');
+    writeFileSync(file, writeBinarySTL(edited, 'potfit edited'));
+    const placeIt = reanchor(t, raw, computeBounds(edited));
+    out(
+      { file, triangles: edited.length / 9, transform: placeIt },
+      [
+        `wrote ${file}: ${edited.length / 9} triangles in mesh.stl's raw coordinates`,
+        `transform that places it where you edited it: ${formatTransform(placeIt)}`,
+        `check it: ./pot-tool check --mesh ${relative(process.cwd(), file) || file} --transform '${formatTransform(placeIt)}'`,
       ].join('\n'),
     );
     break;

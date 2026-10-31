@@ -3,15 +3,16 @@
 
 import { spawn, execFile, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { chmod, copyFile, link, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, link, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { createInterface } from 'node:readline';
-import { join } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { checkFit } from '../shared/fit.ts';
 import { parseSTL, writeBinarySTL } from '../shared/stl.ts';
 import { applyTransform, computeBounds, orientedBounds, validateTransform } from '../shared/transform.ts';
-import type { CodexEvent, CodexItem, CodexResult, CodexRun, CodexRunKind, DesignResult, FitGoals, PotModel, ReferencePot, ReviewResult } from '../shared/types.ts';
+import type { CodexEvent, CodexItem, CodexResult, CodexRun, CodexRunKind, DesignResult, FitGoals, MeshEdit, PotModel, ReferencePot, ReviewResult } from '../shared/types.ts';
+import { blenderWrapper, type BlenderOption, type ToolStatus } from './blender.ts';
 import { DEFAULT_DESIGN_NAME, type DesignImage, type Designs } from './design.ts';
 import { DESIGN_SCHEMA, designFeedbackPrompt, designPrompt } from './design-prompt.ts';
 import { agentsMd, feedbackPrompt, fitPrompt, OUTPUT_SCHEMA, REVIEW_SCHEMA, reviewAgentsMd, reviewPrompt } from './prompt.ts';
@@ -30,6 +31,7 @@ export interface CodexOptions {
   sandbox: SandboxMode;
   /** Absolute path of tools/pot-tool.ts. */
   toolPath: string;
+  blender: BlenderOption;
 }
 
 interface ActiveRun {
@@ -110,6 +112,7 @@ export function parseResult(text: string): CodexResult {
     summary: typeof o.summary === 'string' ? o.summary : '',
     warnings: Array.isArray(o.warnings) ? o.warnings.map(String) : [],
     confidence: o.confidence === 'high' || o.confidence === 'low' ? o.confidence : 'medium',
+    editedMesh: typeof o.editedMesh === 'string' && o.editedMesh.trim() ? o.editedMesh.trim() : null,
   };
 }
 
@@ -151,7 +154,7 @@ export function parseReview(text: string): ReviewResult {
   };
 }
 
-export async function codexVersion(bin: string): Promise<{ available: boolean; version: string | null; error: string | null }> {
+export async function codexVersion(bin: string): Promise<ToolStatus> {
   try {
     const { stdout } = await promisify(execFile)(bin, ['--version'], { timeout: 10000 });
     return { available: true, version: stdout.trim(), error: null };
@@ -170,6 +173,10 @@ export class CodexRunner {
     this.store = store;
     this.designs = designs;
     this.opts = opts;
+  }
+
+  private blender(): Promise<ToolStatus> {
+    return this.opts.blender.status;
   }
 
   activeRun(modelId: string): CodexRun | null {
@@ -199,6 +206,7 @@ export class CodexRunner {
     const script = this.designs.scriptPath(modelId);
     await copyFile(script, join(runDir, 'after.mjs')).catch(() => undefined);
     await copyFile(before, script).catch(() => undefined);
+    await this.designs.restoreParts(modelId, runDir).catch(() => undefined);
   }
 
   /**
@@ -255,6 +263,7 @@ export class CodexRunner {
       designReport: null,
       paramsBefore: isDesignRun(input.mode) ? (model.design?.params ?? null) : null,
       attachments: [],
+      meshEdit: null,
       metrics: null,
       error: null,
       rating: null,
@@ -279,14 +288,20 @@ export class CodexRunner {
   private async prepareWorkspace(model: PotModel, ref: ReferencePot): Promise<string> {
     const ws = join(this.store.modelDir(model.id), 'codex');
     await mkdir(ws, { recursive: true });
+    // Linked afresh every turn: an edit or a revert replaces the model's mesh file.
     const mesh = join(ws, 'mesh.stl');
-    if (!existsSync(mesh)) {
-      await link(this.store.meshFile(model.id), mesh).catch(() => copyFile(this.store.meshFile(model.id), mesh));
-    }
+    await rm(mesh, { force: true });
+    await link(this.store.meshFile(model.id), mesh).catch(() => copyFile(this.store.meshFile(model.id), mesh));
     const tool = join(ws, 'pot-tool');
     await writeFile(tool, `#!/bin/sh\nexec "${process.execPath}" "${this.opts.toolPath}" "$@"\n`);
     await chmod(tool, 0o755);
-    await writeFile(join(ws, 'AGENTS.md'), agentsMd());
+    const blender = await this.blender();
+    await rm(join(ws, 'blender'), { force: true });
+    if (blender.available) {
+      await writeFile(join(ws, 'blender'), blenderWrapper(this.opts.blender.bin, join(dirname(this.opts.toolPath), 'blender')));
+      await chmod(join(ws, 'blender'), 0o755);
+    }
+    await writeFile(join(ws, 'AGENTS.md'), agentsMd(blender.available ? blender.version : null));
     const state = {
       mesh: 'mesh.stl',
       model: { name: model.name, sourceFile: model.sourceFile, triangles: model.triangleCount },
@@ -360,6 +375,7 @@ export class CodexRunner {
       run.attachments = added;
       ws = await this.designs.prepareWorkspace(model, ref);
       await copyFile(this.designs.scriptPath(model.id), join(runDir, 'before.mjs'));
+      await this.designs.snapshotParts(model.id, runDir);
       // A new session sees every reference image; feedback only the new ones (the rest are in refs/).
       const refImages = run.kind === 'design' ? refs : added;
       imagePaths = [...refImages.map((n) => join(this.designs.refsDir(model.id), n)), ...imagePaths];
@@ -484,14 +500,66 @@ export class CodexRunner {
       const result = parseResult(await readFile(lastPath, 'utf8'));
       const model = await this.store.getModel(a.run.modelId);
       const ref = model.fit.referenceId ? await this.store.getReference(model.fit.referenceId) : null;
-      const positions = parseSTL(await readFile(this.store.meshFile(model.id)));
+      let positions = parseSTL(await readFile(this.store.meshFile(model.id)));
+      let meshEdit: MeshEdit | null = null;
+      if (result.editedMesh) {
+        const edited = await this.readEditedMesh(model.id, result.editedMesh);
+        await this.replaceMesh(model.id, edited, runDir);
+        meshEdit = { trianglesBefore: positions.length / 9, trianglesAfter: edited.length / 9 };
+        positions = edited;
+      }
       const fit = { ...model.fit, ...result.fit };
       const metrics = ref ? checkFit(positions, result.transform, ref, fit) : null;
-      await this.store.updateModel(model.id, { transform: result.transform, fit, codexThreadId: a.run.threadId });
-      return this.finish(a, { status: 'done', error: null, result, metrics });
+      await this.store.updateModel(model.id, {
+        transform: result.transform,
+        fit,
+        codexThreadId: a.run.threadId,
+        ...(meshEdit ? { triangleCount: meshEdit.trianglesAfter } : {}),
+      });
+      return this.finish(a, { status: 'done', error: null, result, metrics, meshEdit });
     } catch (e) {
       return this.finish(a, { status: 'error', error: (e as Error).message });
     }
+  }
+
+  /** The mesh a fit run edited: an STL inside the model's Codex workspace. */
+  private async readEditedMesh(modelId: string, name: string): Promise<Float32Array> {
+    const ws = join(this.store.modelDir(modelId), 'codex');
+    const file = resolve(ws, name);
+    if (!file.startsWith(ws + sep)) throw new Error(`Codex's edited mesh (${name}) is outside its workspace`);
+    let positions: Float32Array;
+    try {
+      positions = parseSTL(await readFile(file));
+    } catch (e) {
+      throw new Error(`Could not read Codex's edited mesh ${name}: ${(e as Error).message}`);
+    }
+    if (positions.length === 0) throw new Error(`Codex's edited mesh ${name} has no triangles`);
+    if (!positions.every(Number.isFinite)) throw new Error(`Codex's edited mesh ${name} has invalid coordinates`);
+    await rm(file, { force: true });
+    return positions;
+  }
+
+  /** Make `positions` the model's mesh, keeping the old one with the run so it can be reverted. */
+  private async replaceMesh(modelId: string, positions: Float32Array, runDir: string) {
+    const mesh = this.store.meshFile(modelId);
+    await copyFile(mesh, join(runDir, 'mesh-before.stl'));
+    await writeFile(`${mesh}.tmp`, writeBinarySTL(positions, 'potfit: edited by Codex'));
+    await rename(`${mesh}.tmp`, mesh);
+  }
+
+  /**
+   * Undo a fit run that edited the mesh: its mesh, placement and fit settings
+   * from before it.
+   */
+  async revertMeshEdit(modelId: string, runId: string): Promise<PotModel> {
+    if (this.active.get(modelId)) throw new Conflict('Codex is working on this model; wait for it to finish or cancel it');
+    const run = await this.store.getRun(modelId, runId);
+    const before = join(this.store.runDir(modelId, run.id), 'mesh-before.stl');
+    if (!run.meshEdit || !existsSync(before)) throw new BadRequest('This run did not edit the mesh');
+    const mesh = this.store.meshFile(modelId);
+    await copyFile(before, `${mesh}.tmp`);
+    await rename(`${mesh}.tmp`, mesh);
+    return this.store.updateModel(modelId, { transform: run.transformBefore, fit: run.fitBefore, triangleCount: run.meshEdit.trianglesBefore });
   }
 
   /** Build the script Codex left; if it fails, put back the one that built. */
@@ -509,6 +577,7 @@ export class CodexRunner {
       const msg = (e as Error).message;
       await copyFile(script, failed).catch(() => undefined);
       await copyFile(join(runDir, 'before.mjs'), script).catch(() => undefined);
+      await this.designs.restoreParts(id, runDir).catch(() => undefined);
       await this.designs.recordError(id, msg);
       return this.finish(a, { status: 'error', error: `Codex's design did not build: ${msg}`, design: result });
     }

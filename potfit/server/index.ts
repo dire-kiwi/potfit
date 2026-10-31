@@ -7,6 +7,7 @@ import { analyzeMesh, initialTransform } from '../shared/fit.ts';
 import { parseSTL, writeBinarySTL } from '../shared/stl.ts';
 import { applyTransform, computeBounds, validateTransform, yUpToZUp } from '../shared/transform.ts';
 import { DEFAULT_FIT, type CodexRunKind, type FitSettings, type ModelPatch, type ParamValues, type ReferenceInput, type ServerStatus } from '../shared/types.ts';
+import { blenderVersion } from './blender.ts';
 import { BadRequest, CodexRunner, Conflict, SANDBOX_MODES, codexVersion, type SandboxMode } from './codex.ts';
 import { BuildError, DEFAULT_DESIGN_NAME, Designs, type DesignImage } from './design.ts';
 import { NotFound, Store } from './store.ts';
@@ -28,15 +29,20 @@ if (!SANDBOX_MODES.includes(codexSandbox)) {
   process.exit(1);
 }
 
+// Codex can run Blender, when there is one, to edit meshes and make parts for designs.
+const blenderBin = process.env.POTFIT_BLENDER_BIN || 'blender';
+const blender = { bin: blenderBin, status: blenderVersion(blenderBin) };
+
 const store = new Store(dataDir);
 await store.init();
 const toolPath = join(root, 'tools', 'pot-tool.ts');
-const designs = new Designs(store, { root, toolPath });
+const designs = new Designs(store, { root, toolPath, blender });
 const codex = new CodexRunner(store, designs, {
   bin: codexBin,
   model: process.env.POTFIT_CODEX_MODEL || null,
   sandbox: codexSandbox,
   toolPath,
+  blender,
 });
 await codex.recover();
 
@@ -127,7 +133,7 @@ const RUN_KINDS: CodexRunKind[] = ['fit', 'feedback', 'review', 'design', 'desig
 // ---------------------------------------------------------------- status
 
 app.get('/api/status', route(async (_req, res) => {
-  const status: ServerStatus = { codex: await codexVersion(codexBin), dataDir };
+  const status: ServerStatus = { codex: await codexVersion(codexBin), blender: await blender.status, dataDir };
   res.json(status);
 }));
 
@@ -279,6 +285,11 @@ app.post('/api/models/:id/runs/cancel', route(async (req, res) => {
   res.json({ cancelled: codex.cancel(param(req, 'id')) });
 }));
 
+// Undo a fit run that edited the mesh: the mesh, placement and fit settings from before it.
+app.post('/api/models/:id/runs/:runId/revert', route(async (req, res) => {
+  res.json(await codex.revertMeshEdit(param(req, 'id'), param(req, 'runId')));
+}));
+
 app.patch('/api/models/:id/runs/:runId', route(async (req, res) => {
   const run = await store.getRun(param(req, 'id'), param(req, 'runId'));
   const rating = (req.body ?? {}).rating;
@@ -360,6 +371,7 @@ app.post('/api/models/:id/design/revert', route(async (req, res) => {
   if (run.kind !== 'design' && run.kind !== 'design-feedback') throw new BadRequest('Only design runs can be reverted here');
   const before = join(store.runDir(id, run.id), 'before.mjs');
   if (!existsSync(before)) throw new NotFound('This run has no saved script to go back to');
+  await designs.restoreParts(id, store.runDir(id, run.id));
   res.json(await designs.rebuild(id, { script: await readFile(before, 'utf8'), params: run.paramsBefore ?? {}, resetParams: true }));
 }));
 

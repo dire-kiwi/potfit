@@ -127,6 +127,11 @@ function ResultCard({ run, onRate, onRevert }: { run: CodexRun; onRate: Props['o
         {m && typeof m.topOffset === 'number' && ` · rim proud ${m.topOffset.toFixed(2)} mm`}
       </p>
       {changes.length > 0 && <p className="muted">Updated fit settings: {changes.join(', ')}.</p>}
+      {run.meshEdit && (
+        <p className="muted">
+          Edited the mesh: {run.meshEdit.trianglesBefore.toLocaleString()} → {run.meshEdit.trianglesAfter.toLocaleString()} triangles.
+        </p>
+      )}
       {run.result.warnings.length > 0 && (
         <ul className="warnings">
           {run.result.warnings.map((w) => (
@@ -134,7 +139,13 @@ function ResultCard({ run, onRate, onRevert }: { run: CodexRun; onRate: Props['o
           ))}
         </ul>
       )}
-      <RateRow run={run} onRate={onRate} onRevert={onRevert} good="Good fit" revertTitle="Put the pot and fit settings back to how they were before this run" />
+      <RateRow
+        run={run}
+        onRate={onRate}
+        onRevert={onRevert}
+        good="Good fit"
+        revertTitle={run.meshEdit ? 'Put the mesh, the pot and the fit settings back to how they were before this run' : 'Put the pot and fit settings back to how they were before this run'}
+      />
     </div>
   );
 }
@@ -183,8 +194,15 @@ export function CodexPanel(props: Props) {
     <section className="panel codex">
       <header>
         <h2>{designing ? 'Codex designer' : 'Codex'}</h2>
-        <span className={`chip ${available ? 'ok' : 'bad'}`} title={status?.codex.error ?? status?.codex.version ?? ''}>
-          {status === null ? '…' : available ? status.codex.version : 'not available'}
+        <span className="row">
+          {status?.blender?.available && (
+            <span className="chip ok" title={designing ? 'Codex can make parts for the design in Blender' : 'Codex can edit the mesh in Blender'}>
+              {status.blender.version}
+            </span>
+          )}
+          <span className={`chip ${available ? 'ok' : 'bad'}`} title={status?.codex.error ?? status?.codex.version ?? ''}>
+            {status === null ? '…' : available ? status.codex.version : 'not available'}
+          </span>
         </span>
       </header>
       {!available && status && <p className="error">The server could not run the codex CLI: {status.codex.error}</p>}

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { applyTransform, computeBounds, transformMatrix, validateTransform, yUpToZUp } from '../shared/transform.ts';
+import { applyMatrix, applyTransform, computeBounds, invertMatrix, reanchor, transformMatrix, validateTransform, yUpToZUp, zUpToYUp } from '../shared/transform.ts';
 import type { PotTransform, UpAxis } from '../shared/types.ts';
 
 // An L-shaped point cloud: a long arm along raw +Z plus a short one along +X.
@@ -59,4 +59,19 @@ test('validateTransform rejects bad input', () => {
   assert.match(validateTransform({ up: 'Z', spin: 0, position: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } })!, /up/);
   assert.match(validateTransform({ up: '+Z', spin: 0, position: { x: 0, y: 0 }, scale: { x: 1, y: 1, z: 1 } })!, /position/);
   assert.match(validateTransform({ up: '+Z', spin: 0, position: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: -1, z: 1 } })!, /positive/);
+});
+
+test('placing and unplacing a mesh round-trips, and reanchor keeps an edited mesh in place', () => {
+  const t: PotTransform = { up: '+X', spin: 33, position: { x: 1, y: -2, z: 3 }, scale: { x: 1.3, y: 0.8, z: 1.3 } };
+  const bounds = computeBounds(raw);
+  const placed = applyTransform(raw, t, bounds);
+  const back = applyMatrix(zUpToYUp(yUpToZUp(placed)), invertMatrix(transformMatrix(t, bounds)));
+  raw.forEach((v, i) => close(back[i], v, 1e-4));
+
+  // An edit that grows the bounding box: the old points must land where they did.
+  const placedEdited = new Float32Array([...placed, 20, -30, 40]);
+  const edited = applyMatrix(placedEdited, invertMatrix(transformMatrix(t, bounds)));
+  const t2 = reanchor(t, bounds, computeBounds(edited));
+  const again = applyTransform(edited, t2);
+  placedEdited.forEach((v, i) => close(again[i], v, 1e-3));
 });

@@ -244,8 +244,8 @@ export function App() {
           // it during the review (possibly with a save still pending), so the
           // server's copy must not overwrite what's on screen.
           if (finished.kind === 'review') return;
-          // A design run rebuilt the mesh (or recorded why it couldn't).
-          if (finished.kind === 'design' || finished.kind === 'design-feedback') {
+          // A design run rebuilt the mesh (or recorded why it couldn't); a fit run may have edited it.
+          if (finished.kind === 'design' || finished.kind === 'design-feedback' || finished.meshEdit) {
             api
               .model(modelId)
               .then(({ model: m }) => showRebuilt(m))
@@ -500,10 +500,10 @@ export function App() {
 
   const revertRun = async (run: CodexRun) => {
     if (!model) return;
-    if (run.kind === 'design' || run.kind === 'design-feedback') {
+    if (run.kind === 'design' || run.kind === 'design-feedback' || run.meshEdit) {
       setBuilding(true);
       try {
-        await showRebuilt(await api.revertDesign(model.id, run.id));
+        await showRebuilt(await (run.meshEdit ? api.revertRun(model.id, run.id) : api.revertDesign(model.id, run.id)));
       } catch (e) {
         fail(e);
       } finally {

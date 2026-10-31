@@ -12,7 +12,7 @@ const vec3 = {
 export const OUTPUT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['transform', 'fit', 'summary', 'warnings', 'confidence'],
+  required: ['transform', 'fit', 'summary', 'warnings', 'confidence', 'editedMesh'],
   properties: {
     transform: {
       type: 'object',
@@ -39,10 +39,77 @@ export const OUTPUT_SCHEMA = {
     summary: { type: 'string' },
     warnings: { type: 'array', items: { type: 'string' } },
     confidence: { type: 'string', enum: ['high', 'medium', 'low'] },
+    editedMesh: { type: ['string', 'null'] },
   },
 };
 
-export function agentsMd(): string {
+/** How to edit the mesh with Blender, for AGENTS.md; or why it can't be edited. */
+function meshEditing(blender: string | null): string {
+  if (!blender) {
+    return `## Editing the mesh
+
+Blender isn't installed on this server, so you can't change the mesh: only
+place it. If the user asks for a change to the shape, say so in the summary
+and leave \`editedMesh\` null.
+`;
+  }
+  return `## Editing the mesh
+
+Placing the pot can't fix everything. When the user asks for a change to the
+shape itself (fill the empty space under the nursery pot, thicken a floor,
+add or close a drainage hole, cut something off), edit the mesh with
+${blender}, which runs headless here as \`./blender\`.
+
+1. \`./pot-tool place --z-up --transform '<json>' --out placed.stl\` writes the
+   pot as that transform places it, turned Z up for Blender: millimetres, the
+   nursery pot's base centre at the origin and its axis along +Z, so it
+   reaches z = height and the outer pot's floor is below z = 0 by the floor
+   gap. Use the transform you mean to return.
+2. Write a Blender script and run it: \`./blender -P edit.py -- <args>\`. It
+   can \`import potfit_bpy as pb\`, which has the common steps (open its file
+   to see them all): \`pb.reset()\`, \`pb.load(path)\`, \`pb.save(obj, path)\`,
+   \`pb.boolean(a, b, 'UNION' | 'DIFFERENCE' | 'INTERSECT')\`,
+   \`pb.cylinder(r, z0, z1)\`, \`pb.box(...)\`, \`pb.clean(obj)\`, \`pb.report(obj)\`
+   (triangles, volume, pieces, whether it is a closed solid), and
+   \`pb.fill_cavity(pot, top)\`, which fills the cavity solid from its floor
+   up to z = top, following the walls whatever their shape. For the space
+   under the nursery pot, top is minus the floor gap:
+
+   \`\`\`python
+   import potfit_bpy as pb
+   pb.reset()
+   pot = pb.load("placed.stl")
+   pot = pb.fill_cavity(pot, top=-0.0)  # -floorGap
+   print(pb.report(pot))
+   pb.save(pot, "placed-edited.stl")
+   \`\`\`
+
+3. \`./pot-tool unplace --z-up --transform '<the same json>' --in placed-edited.stl --out edited.stl\`
+   turns it back into mesh.stl's raw coordinates and prints the transform
+   that puts it where you edited it (the bounding box may have changed).
+4. \`./pot-tool check --mesh edited.stl --transform '<that>'\` and
+   \`./pot-tool render --mesh edited.stl --transform '<that>' --out edited.png\`:
+   check the fit and look at the section.
+5. Answer with \`editedMesh: "edited.stl"\` and that transform. The app makes
+   it the model's mesh (the user can revert it), and from the next turn
+   mesh.stl is the edited mesh.
+
+Rules for edits:
+
+- Only edit when the user asks for a change to the shape, or agrees to one
+  you suggest. Otherwise leave \`editedMesh\` null.
+- The result must be one closed solid (\`pb.report\`: closed_solid true,
+  pieces 1). Leave the outside of the pot as it was unless asked.
+- Fill solid rather than leaving a hollow shelf: a shelf over a void needs
+  supports, and the slicer's infill keeps a solid fill light. Mention the
+  extra material (the report's volume) in the summary.
+- The edit is made at this fit's scale and stored unscaled, so if the fit is
+  rescaled later, the edit scales with it; say so if it matters.
+- Keep the triangle count near the original's; don't remesh a detailed model.
+`;
+}
+
+export function agentsMd(blender: string | null): string {
   return `# Pot fitting workspace
 
 You fit a 3D model of a decorative outer pot (a cachepot) around a reference
@@ -57,7 +124,7 @@ can move and scale the pot by hand and send you feedback.
   the app right now (it includes any manual edits). The app rewrites it before
   every turn. Do not modify it; pass your own values to pot-tool instead.
 - \`./pot-tool\`: measuring and fitting helper. \`./pot-tool help\` lists its options.
-
+${blender ? '- `./blender`: headless Blender, for editing the mesh (see Editing the mesh).\n' : ''}
 ## Coordinates
 
 The fit happens in the "pot frame": millimetres, +Y up. The reference pot is a
@@ -104,9 +171,11 @@ is off-centre in the bounding box (handles, faces, feet), x and z are not zero.
    the other side) draws the section. Look at the image if you can view images.
 5. Reply with the JSON result.
 
+${meshEditing(blender)}
 ## Rules
 
-- Work only in this directory. Never edit mesh.stl or state.json.
+- Work only in this directory. Never edit mesh.stl or state.json; an edited
+  mesh goes in a new file (see Editing the mesh).
 - Keep scale.x equal to scale.z unless the user asks for a non-round result,
   and in uniform mode keep all three equal.
 - Start from the solver and only hand-tune for what it does not model (user
@@ -124,6 +193,8 @@ is off-centre in the bounding box (handles, faces, feet), x and z are not zero.
 - \`warnings\`: things the user should check (thin walls, extreme scale,
   uncertain orientation, interference you could not avoid). Empty if none.
 - \`confidence\`: how sure you are that the fit is what the user wants.
+- \`editedMesh\`: the edited mesh's file name (e.g. "edited.stl") if you
+  changed the shape, else null.
 `;
 }
 
@@ -176,6 +247,7 @@ Transform currently shown in the app (it includes any manual moves or scaling th
 ${JSON.stringify(model.transform)}
 
 Current reference pot: ${ref.name}: top OD ${mm(ref.topOD)}, bottom OD ${mm(ref.bottomOD)}, height ${mm(ref.height)}
+mesh.stl is the model's current mesh (${model.triangleCount} triangles), with any edits you made that the user kept.
 Current fit settings:
 ${describeFit(model.fit)}
 ${describeImages(images)}
