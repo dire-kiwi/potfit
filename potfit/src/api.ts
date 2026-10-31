@@ -1,4 +1,5 @@
 import type {
+  ScreenshotReview,
   CodexEvent,
   CodexSettings,
   CodexRun,
@@ -58,6 +59,8 @@ export const api = {
   meshUrl: (id: string) => `/api/models/${id}/mesh.stl`,
   exportUrl: (id: string) => `/api/models/${id}/export.stl`,
 
+  screenshotReview: (id: string) => request<ScreenshotReview | null>('GET', `/api/models/${id}/screenshot-review`),
+  startScreenshotReview: (id: string, images: CodexImage[], settings: CodexSettings) => request<ScreenshotReview>('POST', `/api/models/${id}/screenshot-review`, { images, ...settings }),
   runs: (id: string) => request<CodexRun[]>('GET', `/api/models/${id}/runs`),
   startRun: (id: string, body: CodexSettings & { mode: CodexRun['kind']; message: string; images: CodexImage[]; attachments?: CodexImage[] }) =>
     request<CodexRun>('POST', `/api/models/${id}/runs`, body),

@@ -78,7 +78,7 @@ process.exit(1);
   const runner = new CodexRunner(store, designs, { bin, model: 'server-model', sandbox: 'workspace-write', toolPath: join(root, 'tools/pot-tool.ts'), blender });
   for (const mode of ['fit', 'feedback', 'review'] as const) {
     const overrides = mode === 'review' ? {} : { model: 'custom-model', effort: 'high' as const };
-    const run = await runner.start(model.id, { mode, message: 'Test', images: [], ...overrides });
+    const run = await runner.start(model.id, { mode, message: 'Test', images: mode === 'review' ? [{ name: 'target', ext: 'png', data: Buffer.from('target') }, { name: 'produced', ext: 'png', data: Buffer.from('produced') }] : [], visualReview: mode === 'review' ? 'Compare target and produced independently.' : undefined, ...overrides });
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('Fake Codex timed out')), 5000);
       if (!runner.subscribe(model.id, run.id, (event) => {
@@ -92,5 +92,11 @@ process.exit(1);
     assert.equal(args.includes('model_reasoning_effort="high"'), mode !== 'review');
     assert.equal(args.includes('resume'), mode === 'feedback');
     assert.equal(args.includes('--ephemeral'), mode === 'review');
+    if (mode === 'review') {
+      assert.equal(args.at(-1), 'Compare target and produced independently.');
+      assert.equal(args.filter(arg => arg === '-i').length, 2);
+      assert.equal(await readFile(join(store.runDir(model.id, run.id), 'images/target.png'), 'utf8'), 'target');
+      assert.equal(await readFile(join(store.runDir(model.id, run.id), 'images/produced.png'), 'utf8'), 'produced');
+    }
   }
 });

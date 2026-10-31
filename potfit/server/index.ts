@@ -10,6 +10,7 @@ import { DEFAULT_FIT, type CodexRunKind, type FitSettings, type ModelPatch, type
 import { blenderVersion } from './blender.ts';
 import { BadRequest, CodexRunner, Conflict, SANDBOX_MODES, codexVersion, type SandboxMode } from './codex.ts';
 import { BuildError, DEFAULT_DESIGN_NAME, Designs, type DesignImage } from './design.ts';
+import { ScreenshotReviews } from './screenshot-review.ts';
 import { NotFound, Store } from './store.ts';
 import { codexModels, parseCodexSettings } from './codex-settings.ts';
 
@@ -46,6 +47,8 @@ const codex = new CodexRunner(store, designs, {
   blender,
 });
 await codex.recover();
+const screenshotReviews = new ScreenshotReviews(store, codex);
+await screenshotReviews.recover();
 
 const app = express();
 // Refuse requests addressed to any other host name while bound to loopback, so
@@ -216,6 +219,7 @@ app.get('/api/models/:id', route(async (req, res) => {
 
 app.patch('/api/models/:id', route(async (req, res) => {
   const id = param(req, 'id');
+  if (screenshotReviews.isRunning(id)) throw new Conflict('Screenshot review is working on this model; cancel it before editing');
   const b = (req.body ?? {}) as Record<string, unknown>;
   const patch: ModelPatch & { codexThreadId?: null; design?: { threadId: null } } = {};
   if ('name' in b) {
@@ -238,6 +242,7 @@ app.patch('/api/models/:id', route(async (req, res) => {
 
 app.delete('/api/models/:id', route(async (req, res) => {
   const id = param(req, 'id');
+  if (screenshotReviews.isRunning(id)) throw new Conflict('Cancel screenshot review before deleting the model');
   codex.cancel(id);
   await store.deleteModel(id);
   res.status(204).end();
@@ -265,6 +270,16 @@ app.get('/api/models/:id/export.stl', route(async (req, res) => {
   res.type('model/stl').send(Buffer.from(writeBinarySTL(out, `potfit export: ${model.name}`)));
 }));
 
+app.get('/api/models/:id/screenshot-review', route(async (req, res) => {
+  await store.getModel(param(req, 'id'));
+  res.json(await screenshotReviews.get(param(req, 'id')));
+}));
+app.post('/api/models/:id/screenshot-review', route(async (req, res) => {
+  const targets = decodeImages(req.body?.images, 1);
+  if (targets.length !== 1) throw new BadRequest('Attach one target screenshot');
+  res.status(202).json(await screenshotReviews.start(param(req, 'id'), targets[0], parseCodexSettings(req.body)));
+}));
+
 // ------------------------------------------------------------------ codex
 
 app.get('/api/models/:id/runs', route(async (req, res) => {
@@ -272,6 +287,7 @@ app.get('/api/models/:id/runs', route(async (req, res) => {
 }));
 
 app.post('/api/models/:id/runs', route(async (req, res) => {
+  if (screenshotReviews.isRunning(param(req, 'id'))) throw new Conflict('Screenshot review is already working on this model');
   const b = (req.body ?? {}) as Record<string, unknown>;
   const mode = RUN_KINDS.includes(b.mode as CodexRunKind) ? (b.mode as CodexRunKind) : 'fit';
   const run = await codex.start(param(req, 'id'), {
@@ -285,11 +301,13 @@ app.post('/api/models/:id/runs', route(async (req, res) => {
 }));
 
 app.post('/api/models/:id/runs/cancel', route(async (req, res) => {
-  res.json({ cancelled: codex.cancel(param(req, 'id')) });
+  const id = param(req, 'id');
+  res.json({ cancelled: screenshotReviews.cancel(id) || codex.cancel(id) });
 }));
 
 // Undo a fit run that edited the mesh: the mesh, placement and fit settings from before it.
 app.post('/api/models/:id/runs/:runId/revert', route(async (req, res) => {
+  notWhileRunning(param(req, 'id'));
   res.json(await codex.revertMeshEdit(param(req, 'id'), param(req, 'runId')));
 }));
 
@@ -328,7 +346,7 @@ app.get('/api/models/:id/runs/:runId/events', route(async (req, res) => {
 // ---------------------------------------------------------------- designs
 
 const notWhileRunning = (id: string) => {
-  if (codex.activeRun(id)) throw new Conflict('Codex is working on this model; wait for it to finish or cancel it');
+  if (screenshotReviews.isRunning(id) || codex.activeRun(id)) throw new Conflict('Codex is working on this model; wait for it to finish or cancel it');
 };
 
 // Rebuild with new parameter values, or with an edited script (kept only if it builds).

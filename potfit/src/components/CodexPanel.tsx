@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useThreadState } from './thread-state.ts';
 import { CodexControls, type CodexControlsProps } from './CodexControls.tsx';
 import type { CodexRun, FitGoals, PotModel, ServerStatus } from '../../shared/types.ts';
 import { ImagePicker, type PickedImage } from './ImagePicker.tsx';
@@ -157,9 +158,10 @@ export function CodexPanel(props: Props) {
   const setFeedback = props.onFeedback;
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [openRun, setOpenRun] = useState<string | null>(null);
-  const [feedbackImages, setFeedbackImages] = useState<PickedImage[]>([]);
-  const [newImages, setNewImages] = useState<PickedImage[]>([]);
+  const [latestLogOpen, setLatestLogOpen] = useThreadState(model.id, 'latestLogOpen', false);
+  const [openRun, setOpenRun] = useThreadState<string | null>(model.id, 'openRun', null);
+  const [feedbackImages, setFeedbackImages] = useThreadState<PickedImage[]>(model.id, 'feedbackImages', []);
+  const [newImages, setNewImages] = useThreadState<PickedImage[]>(model.id, 'newImages', []);
 
   // Designed pots talk to the design agent; imported ones to the fitting agent.
   const designing = !!model.design;
@@ -233,8 +235,11 @@ export function CodexPanel(props: Props) {
               {latest.message && <blockquote>{latest.message}</blockquote>}
               <ResultCard run={latest} onRate={props.onRate} onRevert={props.onRevert} />
               <details
+                open={latestLogOpen}
                 onToggle={(e) => {
-                  if ((e.target as HTMLDetailsElement).open && !logs[latest.id]) props.onLoadLog(latest);
+                  const open = (e.target as HTMLDetailsElement).open;
+                  setLatestLogOpen(open);
+                  if (open && !logs[latest.id]) props.onLoadLog(latest);
                 }}
               >
                 <summary>What Codex did</summary>
@@ -298,7 +303,7 @@ export function CodexPanel(props: Props) {
                 {thread ? 'New Codex session' : designing ? 'Design with Codex' : 'Fit with Codex'}
               </button>
               {thread && (
-                <button className="small link" onClick={props.onNewSession} title="Forget the current conversation">
+                <button className="small link" disabled={blocked} onClick={props.onNewSession} title="Forget the current conversation">
                   Clear conversation
                 </button>
               )}

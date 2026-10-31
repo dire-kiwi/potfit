@@ -303,3 +303,27 @@ test/     node --test suites (npm test)
 ```
 
 `npm test` runs the unit tests and `npm run typecheck` runs TypeScript.
+
+### Iterative screenshot review
+
+Select a model with a reference nursery pot, then use **Iterative screenshot
+review** in the right sidebar. Attach one target screenshot and start the loop.
+Three independent Codex sessions review fresh front, side, three-quarter and top
+renders against that target, each with a different visual focus. If any reviewer
+requests changes, the model's worker conversation receives the panel's findings
+and adjusts the model before the next panel. Reviewers run sequentially and do
+not share their conversations. The selected Codex model and effort apply to all
+sessions in the loop.
+
+The loop stops on unanimous approval, cancellation, an agent/build error, or 20
+review rounds. There are at most 19 adjustments: round 20 is the final review,
+so the loop never ends on an unreviewed adjustment. Progress and reviewer results
+are stored per model and shown in the panel; worker runs appear in the existing
+conversation history. Editing is locked while a loop runs. Cancelling keeps the
+last completed model. A server restart marks an interrupted loop as failed;
+start a new loop to continue from that model.
+
+Agent work continues on the server when switching models or closing the page.
+Switching models also preserves each conversation's drafts, image attachments,
+expanded history item and live logs for the lifetime of the page. Run history
+and Codex conversation IDs remain on disk across reloads.

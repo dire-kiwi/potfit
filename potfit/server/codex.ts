@@ -46,6 +46,8 @@ interface ActiveRun {
 
 export interface StartInput extends CodexSettings {
   mode: CodexRunKind;
+  /** Internal screenshot reviewer instructions; never supplied by the runs API. */
+  visualReview?: string;
   message: string;
   /** Screenshots of the app's views. */
   images: DesignImage[];
@@ -397,6 +399,7 @@ export class CodexRunner {
       ws = prepared.ws;
       prompt = reviewPrompt(ref, model.fit, prepared.design, shots.map((s) => s.name.replace(/\.\w+$/, '')));
       schema = REVIEW_SCHEMA;
+      if (input.visualReview) prompt = input.visualReview;
     } else {
       ws = await this.prepareWorkspace(model, ref);
       const names = shots.map((s) => s.name.replace(/\.\w+$/, ''));
@@ -434,6 +437,7 @@ export class CodexRunner {
       text: `Model: ${run.settings?.model || 'Codex default'} · reasoning effort: ${run.settings?.effort || 'Codex default'}`,
     });
 
+    if (a.cancelled) return this.finish(a, { status: 'cancelled', error: null });
     const child = spawn(this.opts.bin, args, { cwd: ws, stdio: ['ignore', 'pipe', 'pipe'], env: process.env });
     a.child = child;
     const stderr: string[] = [];
