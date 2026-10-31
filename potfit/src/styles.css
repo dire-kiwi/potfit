@@ -118,6 +118,8 @@ textarea:focus {
   display: grid;
   grid-template-columns: 260px 1fr 380px;
   height: 100vh;
+  /* The visible height on phones, whose browser bars come and go. */
+  height: 100dvh;
   overflow: hidden;
 }
 
@@ -699,6 +701,9 @@ details > summary {
   border-radius: 10px;
   padding: 16px 18px;
   width: min(460px, 92vw);
+  max-height: 92vh;
+  max-height: 92dvh;
+  overflow-y: auto;
 }
 
 .modal h2 {
@@ -866,8 +871,6 @@ details > summary {
 
 .modal.design-dialog {
   width: min(560px, 94vw);
-  max-height: 92vh;
-  overflow-y: auto;
 }
 
 .field.stacked {
@@ -975,4 +978,224 @@ textarea.code {
   resize: vertical;
   white-space: pre;
   tab-size: 2;
+}
+
+/* phones and small tablets */
+
+.mobile-tabs,
+.view-switch {
+  display: none;
+}
+
+/*
+ * The views on top and one sidebar below them, picked with a tab bar at the
+ * bottom (or none, to give the views the whole screen). Phones on their side
+ * put the sidebar beside the views instead.
+ */
+@media (max-width: 860px), (max-height: 500px) {
+  .app {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(200px, 46%) minmax(0, 1fr) auto;
+    grid-template-areas: 'stage' 'panel' 'tabs';
+  }
+
+  .app.tab-view {
+    grid-template-rows: minmax(0, 1fr) auto;
+    grid-template-areas: 'stage' 'tabs';
+  }
+
+  .stage {
+    grid-area: stage;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .sidebar {
+    grid-area: panel;
+    border: none;
+    /* Don't pull-to-refresh away unsent feedback. */
+    overscroll-behavior: contain;
+  }
+
+  .sidebar.right {
+    border-left: none;
+  }
+
+  .app:not(.tab-models) .sidebar.left,
+  .app:not(.tab-model) .sidebar.right {
+    display: none;
+  }
+
+  /* Tablets: keep forms a readable width. */
+  .sidebar > * {
+    width: 100%;
+    max-width: 640px;
+    align-self: center;
+  }
+
+  .mobile-tabs {
+    grid-area: tabs;
+    display: flex;
+    background: var(--panel);
+    border-top: 1px solid var(--line);
+  }
+
+  .mobile-tabs button {
+    flex: 1;
+    justify-content: center;
+    gap: 8px;
+    min-height: 48px;
+    background: none;
+    border: none;
+    border-radius: 0;
+    color: var(--muted);
+    font-weight: 600;
+  }
+
+  .mobile-tabs button.on {
+    color: var(--accent);
+    box-shadow: inset 0 2px 0 var(--accent);
+  }
+
+  .toolbar {
+    gap: 6px 12px;
+    padding: 6px 8px;
+  }
+
+  .toast {
+    left: 8px;
+    right: 8px;
+    max-width: none;
+  }
+
+  /* One view at a time, switched with the buttons over it. The hidden one
+     keeps its size so screenshots for Codex still have both. */
+  .views {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .view {
+    grid-area: 1 / 1;
+    border-right: none;
+  }
+
+  .views.show-main .view.section,
+  .views.show-section .view.main {
+    visibility: hidden;
+  }
+
+  .view-label {
+    display: none;
+  }
+
+  .view-switch {
+    display: inline-flex;
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    z-index: 3;
+  }
+
+  .view-switch button:not(.on) {
+    background: rgba(26, 29, 34, 0.85);
+  }
+
+  .legend {
+    right: 10px;
+    flex-wrap: wrap;
+  }
+
+  .empty {
+    padding: 0 24px;
+    text-align: center;
+  }
+
+  /* iOS zooms into any field with text under 16px. */
+  input,
+  select,
+  textarea,
+  textarea.code {
+    font-size: 16px;
+  }
+}
+
+@media (max-height: 500px) and (orientation: landscape) {
+  /* Height is short here, so the tabs run down the left edge instead. */
+  .app {
+    grid-template-columns: auto minmax(0, 1fr) min(340px, 42%);
+    grid-template-rows: minmax(0, 1fr);
+    grid-template-areas: 'tabs stage panel';
+  }
+
+  .app.tab-view {
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    grid-template-areas: 'tabs stage';
+  }
+
+  .stage {
+    border-bottom: none;
+  }
+
+  .sidebar {
+    border-left: 1px solid var(--line);
+  }
+
+  .mobile-tabs {
+    flex-direction: column;
+    border-top: none;
+    border-right: 1px solid var(--line);
+  }
+
+  .mobile-tabs button {
+    flex: 0 0 auto;
+    min-height: 56px;
+    padding: 0 12px;
+  }
+
+  .mobile-tabs button.on {
+    box-shadow: inset 2px 0 0 var(--accent);
+  }
+}
+
+/* Finger-sized targets. */
+@media (pointer: coarse) {
+  button,
+  .button {
+    min-height: 36px;
+    padding: 6px 12px;
+  }
+
+  button.small {
+    min-height: 32px;
+    padding: 5px 10px;
+  }
+
+  button.icon {
+    min-width: 36px;
+    justify-content: center;
+  }
+
+  .chip-button {
+    padding: 6px 10px;
+  }
+
+  .thumb button.icon {
+    min-width: 0;
+    min-height: 0;
+    width: 24px;
+    height: 24px;
+    top: -8px;
+    right: -8px;
+  }
+
+  input:not([type='checkbox']):not([type='range']),
+  select {
+    min-height: 34px;
+  }
+
+  input[type='checkbox'] {
+    width: 18px;
+    height: 18px;
+  }
 }

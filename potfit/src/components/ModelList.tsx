@@ -2,6 +2,11 @@ import { useRef, useState } from 'react';
 import type { PotModel } from '../../shared/types.ts';
 import { ACCEPTED_EXTENSIONS } from '../viewer/importers.ts';
 
+// Phone file pickers can grey out model files they have no file type for
+// (iOS does for some), so touch devices list every file and the importer
+// turns down the rest.
+const ACCEPT = matchMedia('(pointer: coarse)').matches ? undefined : ACCEPTED_EXTENSIONS.join(',');
+
 interface Props {
   models: PotModel[];
   selectedId: string | null;
@@ -46,7 +51,7 @@ export function ModelList({ models, selectedId, busy, onSelect, onFiles, onNewDe
           type="file"
           hidden
           multiple
-          accept={ACCEPTED_EXTENSIONS.join(',')}
+          accept={ACCEPT}
           onChange={(e) => {
             onFiles([...(e.target.files ?? [])]);
             e.target.value = '';

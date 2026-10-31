@@ -83,7 +83,7 @@ export function DesignDialog({ references, referenceId, codexAvailable, onCreate
             ))}
           </select>
         </label>
-        {references.length === 0 && <p className="hint">Add a reference pot on the left first.</p>}
+        {references.length === 0 && <p className="hint">Add a nursery pot under Reference pots first.</p>}
         <div className="grid-fields">
           <label className="field">
             <span title="Diametral: the radial gap is half of this">Clearance (⌀)</span>
