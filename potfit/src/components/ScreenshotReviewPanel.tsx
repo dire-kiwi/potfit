@@ -5,9 +5,10 @@ import { ImagePicker, type PickedImage } from './ImagePicker.tsx';
 
 export function ScreenshotReviewPanel({ modelId, onStart, disabled, onUpdate }: {
   modelId: string; disabled: boolean;
-  onStart(images: PickedImage[]): Promise<ScreenshotReview>;
+  onStart(images: PickedImage[], prompt: string): Promise<ScreenshotReview>;
   onUpdate(state: ScreenshotReview | null): void;
 }) {
+  const [prompt, setPrompt] = useState('');
   const [images, setImages] = useState<PickedImage[]>([]);
   const [state, setState] = useState<ScreenshotReview | null>(null);
   const [sending, setSending] = useState(false);
@@ -30,15 +31,22 @@ export function ScreenshotReviewPanel({ modelId, onStart, disabled, onUpdate }: 
     <h2>Iterative screenshot review</h2>
     <p className="hint">Add one target screenshot. Three independent agents compare it with fresh renders, then the worker adjusts the model. Stops when all approve or after 20 review rounds. Continues when you switch models or close this page.</p>
     {!running && <>
+      <label className="field stacked">
+        <span>Instructions (optional)</span>
+        <textarea rows={3} value={prompt} disabled={disabled || sending}
+          placeholder="What should the reviewers and worker focus on or preserve?"
+          onChange={e => setPrompt(e.target.value)} />
+      </label>
       <ImagePicker images={images} onChange={next => setImages(next.slice(-1))} disabled={disabled || sending} />
       <button disabled={disabled || sending || images.length !== 1} onClick={async () => {
         setSending(true); setError('');
-        try { const next = await onStart(images); setState(next); onUpdate(next); }
+        try { const next = await onStart(images, prompt.trim()); setState(next); onUpdate(next); }
         catch (e) { setError((e as Error).message); }
         finally { setSending(false); }
       }}>Start screenshot review</button>
     </>}
     {state && <>
+      {state.prompt && <blockquote>{state.prompt}</blockquote>}
       <p><strong>Round {state.round}/20 · {state.phase}</strong></p>
       {running && <button className="danger" onClick={() => api.cancelRun(modelId).catch(e => setError(e.message))}>Cancel review loop</button>}
       {state.error && <p className="error">{state.error}</p>}

@@ -207,7 +207,8 @@ app.post('/api/designs', route(async (req, res) => {
   const ref = fit.referenceId ? await store.getReference(fit.referenceId) : null;
   if (!ref) throw new BadRequest('Choose a reference pot for the design');
   const name = typeof b.name === 'string' && b.name.trim() ? b.name.trim() : DEFAULT_DESIGN_NAME;
-  const model = await designs.create({ name, description, images, fit, ref });
+  if (b.avoidOverhangs !== undefined && typeof b.avoidOverhangs !== 'boolean') throw new BadRequest('avoidOverhangs must be a boolean');
+  const model = await designs.create({ name, description, images, fit, ref, avoidOverhangs: b.avoidOverhangs !== false });
   const run = useCodex ? await codex.start(model.id, { mode: 'design', message: description, images: [], ...settings }) : null;
   res.status(201).json({ model, run });
 }));
@@ -233,6 +234,11 @@ app.patch('/api/models/:id', route(async (req, res) => {
     const active = codex.activeRun(id);
     if (active && active.kind !== 'review') throw new Conflict('Codex is working on this model; wait for it to finish or cancel it');
     patch.transform = b.transform as ModelPatch['transform'];
+  }
+  if ('avoidOverhangs' in b) {
+    if (typeof b.avoidOverhangs !== 'boolean') throw new BadRequest('avoidOverhangs must be a boolean');
+    if (codex.activeRun(id)) throw new Conflict('Wait for Codex to finish before changing printing preferences');
+    patch.avoidOverhangs = b.avoidOverhangs;
   }
   if ('fit' in b) patch.fit = fitPatch(b.fit) as FitSettings;
   // Forget the conversation: the fitting one, and a designed pot's design one.
@@ -275,9 +281,10 @@ app.get('/api/models/:id/screenshot-review', route(async (req, res) => {
   res.json(await screenshotReviews.get(param(req, 'id')));
 }));
 app.post('/api/models/:id/screenshot-review', route(async (req, res) => {
+  if (req.body?.prompt !== undefined && typeof req.body.prompt !== 'string') throw new BadRequest('prompt must be a string');
   const targets = decodeImages(req.body?.images, 1);
   if (targets.length !== 1) throw new BadRequest('Attach one target screenshot');
-  res.status(202).json(await screenshotReviews.start(param(req, 'id'), targets[0], parseCodexSettings(req.body)));
+  res.status(202).json(await screenshotReviews.start(param(req, 'id'), targets[0], parseCodexSettings(req.body), req.body?.prompt ?? ''));
 }));
 
 // ------------------------------------------------------------------ codex

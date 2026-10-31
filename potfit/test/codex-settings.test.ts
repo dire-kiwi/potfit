@@ -123,7 +123,8 @@ process.exit(1);
     assert.equal(args.includes('resume'), mode === 'feedback');
     assert.equal(args.includes('--ephemeral'), mode === 'review');
     if (mode === 'review') {
-      assert.equal(args.at(-1), 'Compare target and produced independently.');
+      assert.ok(args.at(-1)?.startsWith('Compare target and produced independently.'));
+      assert.match(args.at(-1)!, /Overhang preference: avoid supports/);
       assert.equal(args.filter(arg => arg === '-i').length, 2);
       assert.equal(await readFile(join(store.runDir(model.id, run.id), 'images/target.png'), 'utf8'), 'target');
       assert.equal(await readFile(join(store.runDir(model.id, run.id), 'images/produced.png'), 'utf8'), 'produced');

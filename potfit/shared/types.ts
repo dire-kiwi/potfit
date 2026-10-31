@@ -77,6 +77,8 @@ export const DEFAULT_FIT: FitSettings = {
 };
 
 export interface PotModel {
+  /** Prefer support-free geometry; omitted on older pots means true. */
+  avoidOverhangs?: boolean;
   id: string;
   name: string;
   /** File the model was imported from. */
@@ -92,7 +94,7 @@ export interface PotModel {
   design?: PotDesign | null;
 }
 
-export type ModelPatch = Partial<Pick<PotModel, 'name' | 'transform' | 'fit'>>;
+export type ModelPatch = Partial<Pick<PotModel, 'name' | 'transform' | 'fit' | 'avoidOverhangs'>>;
 
 // ------------------------------------------------------------------ designs
 
@@ -352,6 +354,8 @@ export interface ServerStatus {
 }
 
 export interface ScreenshotReview {
+  /** Optional user guidance applied to every reviewer and worker round. */
+  prompt?: string;
   id: string;
   status: 'running' | 'done' | 'limit' | 'cancelled' | 'error';
   round: number;

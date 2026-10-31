@@ -1,3 +1,4 @@
+import { OverhangSelector } from './OverhangSelector.tsx';
 import { useState } from 'react';
 import { CodexControls, type CodexControlsProps } from './CodexControls.tsx';
 import { DEFAULT_FIT, type CodexRun, type PotModel, type ReferencePot } from '../../shared/types.ts';
@@ -16,6 +17,7 @@ interface Props extends CodexControlsProps {
 
 /** New pot from a description and/or reference images. */
 export function DesignDialog({ references, referenceId, codexAvailable, onCreated, onCancel, settings, onSettings, status }: Props) {
+  const [avoidOverhangs, setAvoidOverhangs] = useState(true);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [images, setImages] = useState<PickedImage[]>([]);
@@ -35,6 +37,7 @@ export function DesignDialog({ references, referenceId, codexAvailable, onCreate
     try {
       const { model, run } = await api.createDesign({
         name: name.trim(),
+        avoidOverhangs,
         description: description.trim(),
         images: images.map((i) => ({ name: i.name, dataUrl: i.dataUrl })),
         fit: { referenceId: refId, clearance, topOffset, floorGap },
@@ -103,6 +106,7 @@ export function DesignDialog({ references, referenceId, codexAvailable, onCreate
             <em>mm</em>
           </label>
         </div>
+        <OverhangSelector value={avoidOverhangs} onChange={setAvoidOverhangs} disabled={sending} />
         <label className="inline">
           <input type="checkbox" checked={useCodex} disabled={!codexAvailable} onChange={(e) => setUseCodex(e.target.checked)} /> Design it with Codex
           {!codexAvailable && <span className="muted"> (Codex isn't available)</span>}

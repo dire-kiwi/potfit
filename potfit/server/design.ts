@@ -170,7 +170,7 @@ export class Designs {
   }
 
   /** A new designed model, starting from the starter script, built for `ref` and `fit`. */
-  async create(input: { name: string; description: string; images: DesignImage[]; fit: FitSettings; ref: ReferencePot }): Promise<PotModel> {
+  async create(input: { name: string; description: string; images: DesignImage[]; fit: FitSettings; ref: ReferencePot; avoidOverhangs?: boolean }): Promise<PotModel> {
     const id = randomUUID();
     const dir = this.dir(id);
     await mkdir(dir, { recursive: true });
@@ -193,6 +193,7 @@ export class Designs {
       return await this.store.createModel(
         {
           name: input.name,
+          avoidOverhangs: input.avoidOverhangs !== false,
           sourceFile: 'designed in potfit',
           triangleCount: built.report.triangles,
           transform: built.report.placement,
@@ -286,6 +287,7 @@ export class Designs {
     await writeFile(join(ws, 'AGENTS.md'), designAgentsMd(join(this.root, 'node_modules', 'manifold-3d', 'manifold.d.ts'), blender.available ? blender.version : null));
     const state = {
       frame: 'design',
+      avoidOverhangs: model.avoidOverhangs !== false,
       design: { script: SCRIPT_FILE, out: 'out' },
       mesh: 'out/design.stl',
       name: model.name,

@@ -6,6 +6,7 @@ import { parseSTL } from '../shared/stl.ts';
 import { applyTransform, yUpToZUp } from '../shared/transform.ts';
 import { renderViews } from '../tools/render3d.ts';
 import { BadRequest, Conflict, type CodexRunner, type StartInput } from './codex.ts';
+import { overhangPreference } from './design-prompt.ts';
 import type { DesignImage } from './design.ts';
 import type { Store } from './store.ts';
 
@@ -49,9 +50,9 @@ export class ScreenshotReviews {
     this.codex.cancel(id);
     return true;
   }
-  async start(id: string, target: DesignImage, settings: CodexSettings) {
+  async start(id: string, target: DesignImage, settings: CodexSettings, prompt = '') {
     if (this.isRunning(id) || this.codex.activeRun(id)) throw new Conflict('An agent is already working on this model');
-    const state: ScreenshotReview = { id: randomUUID(), status: 'running', round: 0, phase: 'Starting', error: null, rounds: [] };
+    const state: ScreenshotReview = { id: randomUUID(), status: 'running', round: 0, phase: 'Starting', prompt: prompt.trim(), error: null, rounds: [] };
     this.running.set(id, state);
     const controller = new AbortController();
     this.controllers.set(id, controller);
@@ -89,7 +90,7 @@ export class ScreenshotReviews {
           await this.save(id, state);
           if (state.status !== 'running') break;
           const run = await this.run(id, { ...settings, mode: 'review', message: `Screenshot review round ${round}: ${focus}`, images: [target, produced], visualReview:
-            `Compare the attached target screenshot (target) against the fresh render of the produced work (produced: front, side, three-quarter, top). Your focus: ${focus}. Review independently; do not change any files. Judge visual similarity, allowing for camera, lighting and background differences. A pass means no meaningful visual changes remain. Otherwise return concerns or fail with specific actionable discrepancies in findings and feedbackForFitter. Do not approve merely because the nursery pot fits. Return the required review JSON.` });
+            `Compare the attached target screenshot (target) against the fresh render of the produced work (produced: front, side, three-quarter, top). Your focus: ${focus}. User instructions (apply alongside the target image): ${JSON.stringify(state.prompt || 'No additional instructions')}. ${overhangPreference(model.avoidOverhangs !== false)} Review independently; do not change any files. Judge visual similarity, allowing for camera, lighting and background differences. A pass means no meaningful visual changes remain. Otherwise return concerns or fail with specific actionable discrepancies in findings and feedbackForFitter. Do not approve merely because the nursery pot fits. Return the required review JSON.` });
           if (state.status !== 'running') break;
           if (run.status !== 'done' || !run.review) throw new Error(run.error || 'Reviewer did not complete');
           entry.reviews.push({ focus, runId: run.id, result: run.review });
@@ -106,7 +107,7 @@ export class ScreenshotReviews {
         if (state.status !== 'running') break;
         const mode = current.design ? (current.design.threadId ? 'design-feedback' : 'design') : (current.codexThreadId ? 'feedback' : 'fit');
         const run = await this.run(id, { ...settings, mode, images: [target, produced], message:
-          `Match the target screenshot. Adjust the produced model using this independent review panel's feedback. Preserve functional fit and printability.\n${entry.reviews.map(r => `${r.focus}: ${r.result.summary}\n${r.result.feedbackForFitter}\n${r.result.findings.map(f => f.detail).join('\n')}`).join('\n\n')}` });
+          `Match the target screenshot. Adjust the produced model using this independent review panel's feedback. Preserve functional fit and printability.\nUser instructions: ${JSON.stringify(state.prompt || 'No additional instructions')}.\n${overhangPreference(current.avoidOverhangs !== false)}\n${entry.reviews.map(r => `${r.focus}: ${r.result.summary}\n${r.result.feedbackForFitter}\n${r.result.findings.map(f => f.detail).join('\n')}`).join('\n\n')}` });
         entry.workerRunId = run.id;
         if (state.status !== 'running') break;
         if (run.status !== 'done') throw new Error(run.error || 'Worker did not complete');
