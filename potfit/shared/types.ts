@@ -88,8 +88,8 @@ export interface PotModel {
   updatedAt: string;
   transform: PotTransform;
   fit: FitSettings;
-  /** Codex thread used for this model's fit conversation, if any. */
-  codexThreadId: string | null;
+  /** The agent-threads thread that fits (imported) or designs (designed) this model, if any. */
+  threadId?: string | null;
   /** Set for pots designed in the app rather than imported (absent on older models). */
   design?: PotDesign | null;
 }
@@ -158,8 +158,6 @@ export interface PotDesign {
   description: string;
   /** Reference images the user supplied (file names in the design's refs/ folder). */
   images: string[];
-  /** Codex conversation that designs this pot. */
-  threadId: string | null;
   /** Current parameter values and what the script declares. */
   params: ParamValues;
   paramSpec: Record<string, DesignParam>;
@@ -223,26 +221,12 @@ export interface ProfileRow {
   gap: number;
 }
 
-export type CodexRunStatus = 'running' | 'done' | 'error' | 'cancelled';
-
-/** Fit goals Codex can change when the user's feedback asks for different ones. */
+/** Fit goals the agent can change when the user's feedback asks for different ones. */
 export type FitGoals = Omit<FitSettings, 'referenceId'>;
 
-export interface CodexResult {
-  transform: PotTransform;
-  /** The goals the transform was fitted to; null if Codex did not report them. */
-  fit: FitGoals | null;
-  summary: string;
-  warnings: string[];
-  confidence: 'high' | 'medium' | 'low';
-  /**
-   * A mesh Codex edited (with Blender, say), relative to its workspace, in the
-   * raw coordinates of mesh.stl; `transform` places it. Null if it only placed the pot.
-   */
-  editedMesh?: string | null;
-}
+export type Confidence = 'high' | 'medium' | 'low';
 
-/** A fit run that replaced the model's mesh. The mesh from before is kept in the run's directory. */
+/** A fit that replaced the model's mesh. The mesh from before is kept with its checkpoint. */
 export interface MeshEdit {
   trianglesBefore: number;
   trianglesAfter: number;
@@ -254,7 +238,7 @@ export interface ReviewFinding {
   detail: string;
 }
 
-/** An independent Codex review of a finished fit. */
+/** An independent review of a finished fit. */
 export interface ReviewResult {
   verdict: 'pass' | 'concerns' | 'fail';
   summary: string;
@@ -263,92 +247,79 @@ export interface ReviewResult {
   feedbackForFitter: string;
 }
 
-/** What a design run reports, alongside the build of its script. */
-export interface DesignResult {
-  /** Short name for the design. */
-  title: string;
-  summary: string;
-  warnings: string[];
-  confidence: 'high' | 'medium' | 'low';
-}
+// ------------------------------------------------------------------ agent
 
-export type CodexRunKind = 'fit' | 'feedback' | 'review' | 'design' | 'design-feedback';
+/** What a thread does: fit an imported model, design a designed one, or review a fit. */
+export type AgentRole = 'fit' | 'design' | 'review';
 
-export const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
-export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
+/** Claude Code's reasoning efforts (`claude --effort`). */
+export const AGENT_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+export type AgentEffort = (typeof AGENT_EFFORTS)[number];
 
-export interface CodexSettings {
-  /** Empty or omitted values use the server / Codex defaults. */
+export interface AgentSettings {
+  /** Empty or omitted values use the server's / Claude Code's defaults. */
   model?: string | null;
-  effort?: ReasoningEffort | null;
+  effort?: AgentEffort | null;
 }
 
-export interface CodexModelOption {
+export interface AgentModelOption {
   id: string;
   name: string;
-  efforts: ReasoningEffort[];
 }
 
-export interface CodexRun {
+/**
+ * A change the agent applied with a tool (a fit, a mesh edit or a design), with what it replaced,
+ * so it can be reverted. Kept in models/<id>/checkpoints/<id>/, and the tool call's structured result.
+ */
+export interface Checkpoint {
   id: string;
   modelId: string;
-  /**
-   * fit and feedback change the placement (and may edit the mesh); review only looks at it; design
-   * and design-feedback rewrite a designed pot's script and rebuild it.
-   */
-  kind: CodexRunKind;
-  /** Requested overrides; absent on older runs. Null means delegated to Codex. */
-  settings?: CodexSettings;
-  /** User instructions (fit, design) or feedback text; empty for reviews. */
-  message: string;
-  status: CodexRunStatus;
-  startedAt: string;
-  finishedAt: string | null;
-  threadId: string | null;
+  threadId: string;
+  toolCallId: string | null;
+  kind: 'fit' | 'mesh-edit' | 'design';
+  createdAt: string;
+  /** What the agent said about it. */
+  title?: string;
+  summary: string;
+  warnings: string[];
+  confidence: Confidence;
+  /** The model after the change, and before it. */
+  transform: PotTransform;
+  fit: FitSettings;
   transformBefore: PotTransform;
   fitBefore: FitSettings;
-  referenceId: string | null;
-  result: CodexResult | null;
-  /** Review runs only (absent on runs saved before reviews existed). */
-  review?: ReviewResult | null;
-  /** Design runs only: Codex's answer, the build it produced, and the parameters before the run. */
-  design?: DesignResult | null;
-  designReport?: DesignReport | null;
-  paramsBefore?: ParamValues | null;
-  /** Reference images the user attached to this run. */
-  attachments?: string[];
-  /** Fit runs that edited the mesh; Revert puts the old mesh back. */
-  meshEdit?: MeshEdit | null;
-  /** Server-side check of the result transform, or of the reviewed placement. */
+  paramsBefore: ParamValues | null;
+  triangleCountBefore: number;
+  meshEdit: MeshEdit | null;
+  designReport: DesignReport | null;
+  /** The server's measurements of the result. */
   metrics: FitMetrics | null;
-  error: string | null;
-  /** User verdict on the result. */
   rating: 'accepted' | 'rejected' | null;
+  revertedAt: string | null;
 }
 
-/** Normalised item from `codex exec --json`, as shown in the run log. */
-export interface CodexItem {
+/** A one-off review in a thread of its own (or one reviewer of a screenshot review round). */
+export interface Review {
   id: string;
-  type: string;
-  status: 'in_progress' | 'completed' | 'failed';
-  text?: string;
-  command?: string;
-  output?: string;
-  exitCode?: number | null;
-  detail?: unknown;
+  modelId: string;
+  threadId: string;
+  createdAt: string;
+  finishedAt: string | null;
+  status: 'running' | 'done' | 'error' | 'cancelled';
+  error: string | null;
+  /** The screenshot-review focus, for a visual reviewer. */
+  focus: string | null;
+  /** What was reviewed. */
+  transform: PotTransform;
+  fit: FitSettings;
+  referenceId: string | null;
+  metrics: FitMetrics | null;
+  result: ReviewResult | null;
 }
-
-export type CodexEvent =
-  | { type: 'status'; status: CodexRunStatus; error?: string | null }
-  | { type: 'thread'; threadId: string }
-  | { type: 'item'; item: CodexItem }
-  | { type: 'usage'; usage: Record<string, number> }
-  | { type: 'log'; level: 'info' | 'error'; text: string }
-  | { type: 'result'; run: CodexRun };
 
 export interface ServerStatus {
-  codex: { available: boolean; version: string | null; error: string | null; defaultModel?: string | null; models?: CodexModelOption[] };
-  /** Blender, which Codex can use to edit meshes and make parts for designs. */
+  claude: { available: boolean; version: string | null; error: string | null; defaultModel: string | null; defaultEffort: string | null; models: AgentModelOption[] };
+  /** Blender, which the agent can use to edit meshes and make parts for designs. */
   blender: { available: boolean; version: string | null; error: string | null };
   dataDir: string;
 }
@@ -361,5 +332,22 @@ export interface ScreenshotReview {
   round: number;
   phase: string;
   error: string | null;
-  rounds: { round: number; reviews: { focus: string; runId: string; result: ReviewResult }[]; workerRunId?: string }[];
+  rounds: { round: number; reviews: { focus: string; reviewId: string; result: ReviewResult }[]; workerAdjusted?: boolean }[];
 }
+
+/** A thread's state as /live tells it. */
+export interface ThreadState {
+  id: string;
+  role: AgentRole;
+  status: 'idle' | 'running' | 'waiting' | 'error';
+  model?: string;
+  effort?: string;
+}
+
+/** What /api/models/:id/live streams. */
+export type LiveEvent =
+  | { type: 'model'; model: PotModel; meshChanged: boolean }
+  | { type: 'thread'; thread: ThreadState }
+  | { type: 'checkpoint'; checkpoint: Checkpoint }
+  | { type: 'review'; review: Review }
+  | { type: 'loop'; state: ScreenshotReview };
