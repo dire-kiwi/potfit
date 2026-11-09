@@ -57,6 +57,11 @@ export function potfitPolicy(opts: PolicyOptions) {
         return 'allow';
       case 'read':
       case 'search': {
+        const pattern = (q.input as { pattern?: unknown } | null)?.pattern;
+        // An absolute (or upward) glob reaches outside the directory it's given.
+        if (q.name === 'Glob' && typeof pattern === 'string' && (isAbsolute(pattern) || pattern.split(/[\\/]/).includes('..'))) {
+          return { deny: 'Glob patterns are relative to your working directory.' };
+        }
         const target = targetOf(q, cwd);
         if (inside(target, cwd) || opts.readable.some((r) => inside(target, r))) return 'allow';
         return { deny: `Only files in your working directory (${cwd}) can be read.` };
@@ -68,6 +73,7 @@ export function potfitPolicy(opts: PolicyOptions) {
         const rel = relative(realish(cwd), realish(target));
         if (role === 'fit' && rel === 'mesh.stl') return { deny: "mesh.stl is the model's mesh; change it with apply_mesh_edit." };
         if (role === 'design' && (rel === 'refs' || rel.startsWith(`refs${sep}`))) return { deny: "refs/ holds the user's reference images; leave them as they are." };
+        if (role === 'design' && (rel === '.applied' || rel.startsWith(`.applied${sep}`))) return { deny: '.applied/ is the design as the user last saw it; apply_design keeps it.' };
         return 'allow';
       }
       case 'shell':

@@ -5,7 +5,7 @@
 //   models/<id>/design/                a design thread (see design.ts)
 //   models/<id>/reviews/<rid>/         a review thread: fitted.stl (the model as placed), state.json
 
-import { copyFile, link, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, link, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parseSTL, writeBinarySTL } from '../../shared/stl.ts';
 import { applyTransform, computeBounds, orientedBounds, type Bounds } from '../../shared/transform.ts';
@@ -24,8 +24,10 @@ export async function prepareFitWorkspace(store: Store, model: PotModel, ref: Re
   await mkdir(join(ws, 'renders'), { recursive: true });
   // Linked afresh: an edit or a revert replaces the model's mesh file.
   const mesh = join(ws, 'mesh.stl');
-  await rm(mesh, { force: true });
-  await link(store.meshFile(model.id), mesh).catch(() => copyFile(store.meshFile(model.id), mesh));
+  // Swapped in with a rename, so a pot-tool reading it meanwhile never finds it missing.
+  const tmp = `${mesh}.${process.pid}.${Math.random().toString(36).slice(2, 8)}`;
+  await link(store.meshFile(model.id), tmp).catch(() => copyFile(store.meshFile(model.id), tmp));
+  await rename(tmp, mesh);
   const state = {
     mesh: 'mesh.stl',
     model: { name: model.name, sourceFile: model.sourceFile, triangles: model.triangleCount },

@@ -59,7 +59,8 @@ const agent = new Agent({
   threadsDb: join(dataDir, 'threads.db'),
   toolPath,
   blender,
-  claude: { bin: claudeBin },
+  // No shell at all: Claude Code allows some read-only commands without asking the policy.
+  claude: { bin: claudeBin, args: ['--disallowedTools', 'Bash,BashOutput,KillShell'] },
   defaultModel,
   defaultEffort,
   submitReview: (modelId, reviewId, result) => reviews.submit(modelId, reviewId, result),

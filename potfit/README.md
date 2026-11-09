@@ -45,6 +45,12 @@ npm start          # http://localhost:5174
 | `POTFIT_CLAUDE_EFFORT` | Claude Code's default | Reasoning effort likewise: `low`, `medium`, `high`, `xhigh` or `max` |
 | `POTFIT_BLENDER_BIN` | `blender` | Blender executable, run headless (`-b`) for mesh edits and design parts |
 | `CLAUDE_CONFIG_DIR` | `~/.claude` | Claude Code's own: where its login and sessions are (see Containers) |
+| `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` | | Claude Code's own: send its requests to another endpoint (a proxy, say) with that bearer token, instead of using a login |
+
+The server passes its whole environment to Claude Code, so Claude Code's own
+variables (`ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` for a proxy,
+`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CONFIG_DIR`) go in the
+server's environment. A `settings.json` `env` block isn't read (see below).
 
 Threads run with none of your own Claude Code settings, hooks, MCP servers or
 skills (agent-threads starts Claude with `--setting-sources ""` and
@@ -92,7 +98,8 @@ Claude Code needs a login that outlives the container. Either point
 `CLAUDE_CONFIG_DIR` at a directory on a volume (create it before potfit
 starts) and log in once inside the container (`claude`, then `/login`), or
 make a long-lived token on a workstation with `claude setup-token` and pass
-it as `CLAUDE_CODE_OAUTH_TOKEN`; an `ANTHROPIC_API_KEY` works too. Claude
+it as `CLAUDE_CODE_OAUTH_TOKEN`; an `ANTHROPIC_API_KEY` works too, as does a
+proxy (`ANTHROPIC_BASE_URL` with `ANTHROPIC_AUTH_TOKEN`), which needs no login. Claude
 Code keeps its sessions in its config directory, so keep that directory (and
 `POTFIT_DATA`) on volumes, or threads can't resume after a redeploy. Run the
 container as a non-root user.

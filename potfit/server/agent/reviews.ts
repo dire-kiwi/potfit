@@ -90,7 +90,9 @@ export class Reviews {
       ].join('\n');
     const done = new Promise<Review>((resolve) => this.waiting.set(id, resolve));
     void this.agent.runTurn(thread.id, text, images).catch(async (e) => {
-      await this.finish(modelId, id, { status: 'error', error: (e as Error).message });
+      const failed = await this.finish(modelId, id, { status: 'error', error: (e as Error).message }).catch(() => null);
+      this.waiting.get(id)?.(failed ?? { ...review, status: 'error', error: (e as Error).message });
+      this.waiting.delete(id);
     });
     return { review, done };
   }
