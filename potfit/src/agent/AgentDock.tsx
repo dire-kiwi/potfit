@@ -4,6 +4,7 @@
 import { Thread } from '@dire-kiwi/agent-threads-react';
 import type { PotModel, Review, ThreadState } from '../../shared/types.ts';
 import { api } from '../api.ts';
+import { renderMarkdown } from './markdown.tsx';
 import { PotComposer } from './PotComposer.tsx';
 import { TOOL_RENDERERS, renderItem } from './renderers.tsx';
 import { useThreadSource } from './source.ts';
@@ -79,6 +80,7 @@ export function AgentDock({ model, threads, reviews, selected, onSelect, onStart
           onCommand={api.command}
           tools={TOOL_RENDERERS}
           renderItem={renderItem}
+          renderMarkdown={renderMarkdown}
           empty={<Empty role={role} />}
           composer={<PotComposer role={role} mine={role !== 'review'} />}
         />

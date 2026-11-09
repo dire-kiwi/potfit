@@ -44,7 +44,7 @@ const blender = { bin: blenderBin, status: blenderVersion(blenderBin) };
 const store = new Store(dataDir);
 await store.init();
 const migrated = await migrateFromCodex(dataDir);
-if (migrated) console.log(`potfit: removed Codex's runs and workspaces (${migrated.runs} runs in ${migrated.models} models); see README.md`);
+if (migrated?.models) console.log(`potfit: removed Codex's runs and workspaces (${migrated.runs} runs in ${migrated.models} models); see README.md`);
 const toolPath = join(root, 'tools', 'pot-tool.ts');
 const designs = new Designs(store, { root, toolPath });
 const live = new Live();

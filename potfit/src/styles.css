@@ -975,6 +975,20 @@ label.inline.angle input {
   --at-user-border: var(--line-strong);
 }
 
+.dock .at-root ul,
+.dock .at-root ol {
+  padding-left: 20px;
+  margin: 6px 0;
+}
+
+.dock .at-root li {
+  margin: 2px 0;
+}
+
+.dock .md-heading {
+  margin: 10px 0 4px;
+}
+
 .pot-composer {
   border-top: 1px solid var(--line);
   padding: 8px 10px 10px;
@@ -1189,7 +1203,7 @@ label.inline.angle input {
   padding: 0;
 }
 
-.review-line {
+button.review-line {
   width: 100%;
   display: grid;
   grid-template-columns: auto auto 1fr;
@@ -1679,6 +1693,19 @@ textarea.code {
   .app.tab-view {
     grid-template-rows: auto minmax(0, 1fr) auto;
     grid-template-areas: 'top' 'stage' 'tabs';
+  }
+
+  /* The conversation needs the room more than the views. */
+  .app.tab-agent {
+    grid-template-rows: auto minmax(150px, 30%) minmax(0, 1fr) auto;
+  }
+
+  .pot-composer .chips {
+    display: none;
+  }
+
+  .pot-composer {
+    padding: 6px 8px 8px;
   }
 
   .topbar {

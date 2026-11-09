@@ -327,7 +327,7 @@ export function App() {
         setCheckpoints(Object.fromEntries(cps.map((c) => [c.id, c])));
         setReviews(rvs);
         setLoop(lp);
-        setStep(m.fit.referenceId ? 'fit' : 'pot');
+        setStep(!m.fit.referenceId ? 'pot' : m.design ? 'model' : 'fit');
         viewer.current?.setMesh(pos);
         viewer.current?.setTransform(m.transform);
         frameOnLoad.current = true;
