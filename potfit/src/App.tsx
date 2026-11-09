@@ -1,58 +1,47 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
-import { REASONING_EFFORTS } from '../shared/types.ts';
+import { AGENT_EFFORTS } from '../shared/types.ts';
 import { parseSTL, writeBinarySTL } from '../shared/stl.ts';
 import { cloneTransform, transformsEqual } from '../shared/transform.ts';
-import type { ScreenshotReview, CodexSettings, CodexEvent, CodexRun, FitMetrics, FitSettings, ParamValues, PotModel, PotTransform, ReferencePot, ServerStatus } from '../shared/types.ts';
+import type { AgentSettings, Checkpoint, FitMetrics, FitSettings, LiveEvent, ParamValues, PotModel, PotTransform, ReferencePot, Review, ScreenshotReview, ServerStatus, ThreadState } from '../shared/types.ts';
+import { AgentDock } from './agent/AgentDock.tsx';
+import { PotAgentContext, imageAttachment, type PotAgent } from './agent/context.ts';
 import { api, type ModelPatchBody } from './api.ts';
-import { OverhangSelector } from './components/OverhangSelector.tsx';
-import { CodexPanel } from './components/CodexPanel.tsx';
 import { DesignDialog } from './components/DesignDialog.tsx';
-import { DesignPanel } from './components/DesignPanel.tsx';
-import { FitPanel } from './components/FitPanel.tsx';
 import type { PickedImage } from './components/ImagePicker.tsx';
 import { ImportDialog, type PendingImport } from './components/ImportDialog.tsx';
-import { ModelList } from './components/ModelList.tsx';
-import { ReferencePanel } from './components/ReferencePanel.tsx';
-import { ScreenshotReviewPanel } from './components/ScreenshotReviewPanel.tsx';
-import { ReviewPanel } from './components/ReviewPanel.tsx';
-import type { LogEntry } from './components/RunLog.tsx';
 import { GeometryClient } from './geometry.ts';
+import { Hud } from './steps/Hud.tsx';
+import { STEPS, Stepper, type StepId, type StepState } from './steps/Stepper.tsx';
+import { ExportStep, FitStep, ModelStep, PotStep, ReviewStep } from './steps/Steps.tsx';
 import { importFile, type ImportedPart } from './viewer/importers.ts';
 import { PotViewer, type GizmoMode, type ScaleLock } from './viewer/PotViewer.ts';
 
 const LAST_MODEL_KEY = 'potfit.model';
+const SETTINGS_KEY = 'potfit.agentSettings';
 
-/** On a phone one sidebar shows under the views, or neither (`view`). */
-type MobileTab = 'models' | 'view' | 'model';
+/** On a phone one of the side panels shows under the views, or neither (`view`). */
+type MobileTab = 'steps' | 'view' | 'agent';
+type ViewMode = 'split' | '3d' | 'section';
 
-function addToLog(entries: LogEntry[], e: CodexEvent): LogEntry[] {
-  if (e.type === 'item') {
-    const i = entries.findIndex((x) => x.kind === 'item' && x.item.id === e.item.id);
-    if (i >= 0) {
-      const next = entries.slice();
-      next[i] = { kind: 'item', item: e.item };
-      return next;
-    }
-    return [...entries, { kind: 'item', item: e.item }];
-  }
-  if (e.type === 'log') return [...entries, { kind: 'log', level: e.level, text: e.text }];
-  if (e.type === 'status' && e.status === 'error' && e.error) return [...entries, { kind: 'log', level: 'error', text: e.error }];
-  return entries;
-}
+const prefersLight = () => matchMedia('(prefers-color-scheme: light)').matches;
 
 export function App() {
-  const [codexSettings, setCodexSettings] = useState<CodexSettings>(() => {
+  const [settings, setSettings] = useState<AgentSettings>(() => {
     try {
-      const saved = JSON.parse(localStorage.getItem('potfit.codexSettings') ?? '{}');
-      return { model: typeof saved?.model === 'string' ? saved.model : null, effort: REASONING_EFFORTS.includes(saved?.effort) ? saved.effort : null };
+      const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? '{}');
+      return { model: typeof saved?.model === 'string' ? saved.model : null, effort: AGENT_EFFORTS.includes(saved?.effort) ? saved.effort : null };
+    } catch {
+      return {};
     }
-    catch { return {}; }
   });
-  const changeCodexSettings = (settings: CodexSettings) => {
-    setCodexSettings(settings);
-    try { localStorage.setItem('potfit.codexSettings', JSON.stringify(settings)); }
-    catch { /* Settings still work if browser storage is unavailable. */ }
-  };
+  const changeSettings = useCallback((next: AgentSettings) => {
+    setSettings(next);
+    try {
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
+    } catch {
+      // Settings still work if browser storage is unavailable.
+    }
+  }, []);
   const [status, setStatus] = useState<ServerStatus | null>(null);
   const [references, setReferences] = useState<ReferencePot[]>([]);
   const [models, setModels] = useState<PotModel[]>([]);
@@ -63,20 +52,13 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [metrics, setMetrics] = useState<FitMetrics | null>(null);
   const [metricsError, setMetricsError] = useState<string | null>(null);
-  const [runs, setRuns] = useState<CodexRun[]>([]);
-  const [activeRun, setActiveRun] = useState<CodexRun | null>(null);
-  const [logs, setLogs] = useState<Record<string, LogEntry[]>>({});
-  const [drafts, setDrafts] = useState<Record<string, { instructions: string; feedback: string }>>({});
-  const instructionsDraft = drafts[selectedId ?? '']?.instructions ?? '';
-  const feedbackDraft = drafts[selectedId ?? '']?.feedback ?? '';
-  const setDraft = (key: 'instructions' | 'feedback', text: string) => {
-    if (selectedId) setDrafts(ds => ({ ...ds, [selectedId]: { ...(ds[selectedId] ?? { instructions: '', feedback: '' }), [key]: text } }));
-  };
-  const setInstructionsDraft = (text: string) => setDraft('instructions', text);
-  const setFeedbackDraft = (text: string) => setDraft('feedback', text);
-  const [loopRunning, setLoopRunning] = useState(false);
-  const [startingReview, setStartingReview] = useState(false);
-  const loopVersion = useRef('');
+  const [threads, setThreads] = useState<Record<string, ThreadState>>({});
+  const [checkpoints, setCheckpoints] = useState<Record<string, Checkpoint>>({});
+  const [reviews, setReviews] = useState<Review[]>([]);
+  const [loop, setLoop] = useState<ScreenshotReview | null>(null);
+  const [startingLoop, setStartingLoop] = useState(false);
+  const [dockThread, setDockThread] = useState<string | null>(null);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [pendingImport, setPendingImport] = useState<PendingImport | null>(null);
   const [designing, setDesigning] = useState(false);
   const [building, setBuilding] = useState(false);
@@ -84,9 +66,10 @@ export function App() {
   const [scaleLock, setScaleLock] = useState<ScaleLock>('uniform');
   const [sectionAngle, setSectionAngle] = useState(0);
   const [cutaway, setCutaway] = useState(false);
-  const [tab, setTab] = useState<MobileTab>(() => (localStorage.getItem(LAST_MODEL_KEY) ? 'model' : 'models'));
-  // Narrow screens show one view at a time; the other stays laid out so Codex screenshots still work.
-  const [shownView, setShownView] = useState<'main' | 'section'>('main');
+  const [viewMode, setViewMode] = useState<ViewMode>(() => (localStorage.getItem('potfit.viewMode') as ViewMode) || 'split');
+  const [step, setStep] = useState<StepId>('model');
+  const [tab, setTab] = useState<MobileTab>('steps');
+  const [light, setLight] = useState(prefersLight);
   // Undo history lives in a ref (it is only read in event handlers); bump re-renders the buttons.
   const history = useRef<{ past: PotTransform[]; future: PotTransform[] }>({ past: [], future: [] });
   const [, bumpHistory] = useReducer((n: number) => n + 1, 0);
@@ -101,17 +84,14 @@ export function App() {
   const pendingSave = useRef<{ id: string; patch: ModelPatchBody; timer: number } | null>(null);
   const meshReady = useRef<Promise<unknown>>(Promise.resolve());
   const frameOnLoad = useRef(false);
-  const subscriptions = useRef(new Map<string, () => void>());
-  useEffect(() => () => { for (const off of subscriptions.current.values()) off(); }, []);
 
   const reference = references.find((r) => r.id === model?.fit.referenceId) ?? null;
-  // One Codex run per model at a time. Reviews work on a copy of the fit, so
-  // only fitting runs pause manual edits.
-  const fitRuns = runs.filter((r) => r.kind !== 'review');
-  const reviewRuns = runs.filter((r) => r.kind === 'review');
-  const fitActive = activeRun && activeRun.kind !== 'review' ? activeRun : null;
-  const reviewActive = activeRun && activeRun.kind === 'review' ? activeRun : null;
-  const locked = !!fitActive || building || loopRunning || startingReview;
+  const mainThread = model?.threadId ? threads[model.threadId] : undefined;
+  const agentBusy = !!mainThread && (mainThread.status === 'running' || mainThread.status === 'waiting');
+  const loopRunning = loop?.status === 'running';
+  const locked = agentBusy || building || loopRunning || startingLoop;
+  const lockReason = loopRunning || startingLoop ? 'The screenshot review is driving the agent; cancel it to take over.' : null;
+  const agentAvailable = status?.claude.available ?? false;
 
   const fail = (e: unknown) => setError((e as Error).message ?? String(e));
 
@@ -167,27 +147,24 @@ export function App() {
 
   const editTransform = useCallback((t: PotTransform) => setTransform(t, { record: modelRef.current?.transform }), [setTransform]);
 
-  const step = useCallback(
+  const stepHistory = useCallback(
     (from: 'past' | 'future') => {
       const m = modelRef.current;
       const h = history.current;
       const target = h[from].at(-1);
       if (!m || locked || !target) return;
       const current = cloneTransform(m.transform);
-      history.current =
-        from === 'past'
-          ? { past: h.past.slice(0, -1), future: [...h.future, current] }
-          : { past: [...h.past, current], future: h.future.slice(0, -1) };
+      history.current = from === 'past' ? { past: h.past.slice(0, -1), future: [...h.future, current] } : { past: [...h.past, current], future: h.future.slice(0, -1) };
       bumpHistory();
       setTransform(target);
     },
     [locked, setTransform],
   );
-  const undo = useCallback(() => step('past'), [step]);
-  const redo = useCallback(() => step('future'), [step]);
+  const undo = useCallback(() => stepHistory('past'), [stepHistory]);
+  const redo = useCallback(() => stepHistory('future'), [stepHistory]);
 
   const updateFit = (patch: Partial<FitSettings>) => {
-    if (!model || loopRunning || startingReview) return;
+    if (!model || locked) return;
     setModel({ ...model, fit: { ...model.fit, ...patch } });
     scheduleSave(model.id, { fit: patch });
   };
@@ -214,6 +191,13 @@ export function App() {
     };
   }, [setTransform]);
 
+  useEffect(() => {
+    const mq = matchMedia('(prefers-color-scheme: light)');
+    const on = () => setLight(mq.matches);
+    mq.addEventListener('change', on);
+    return () => mq.removeEventListener('change', on);
+  }, []);
+  useEffect(() => viewer.current?.setTheme(light ? 'light' : 'dark'), [light]);
   useEffect(() => viewer.current?.setGizmoMode(gizmo), [gizmo]);
   useEffect(() => viewer.current?.setScaleLock(scaleLock), [scaleLock]);
   useEffect(() => viewer.current?.setSectionAngle(sectionAngle), [sectionAngle]);
@@ -223,6 +207,9 @@ export function App() {
   useEffect(() => {
     viewer.current?.setReference(reference, model?.fit.clearance ?? 0);
   }, [reference, model?.fit.clearance]);
+  useEffect(() => {
+    localStorage.setItem('potfit.viewMode', viewMode);
+  }, [viewMode]);
   // Frame a newly loaded model once its reference pot is in the scene too.
   useEffect(() => {
     if (positions && frameOnLoad.current) {
@@ -260,84 +247,90 @@ export function App() {
     [geometry],
   );
 
-  const subscribe = useCallback((modelId: string, run: CodexRun) => {
-    if (subscriptions.current.has(run.id)) return;
-    setLogs((l) => ({ ...l, [run.id]: [] }));
-    subscriptions.current.set(run.id, api.runEvents(
-      modelId,
-      run.id,
-      (e) => {
-        setLogs((l) => ({ ...l, [run.id]: addToLog(l[run.id] ?? [], e) }));
-        if (e.type === 'result') {
-          const finished = e.run;
-          if (modelRef.current?.id === modelId) {
-            setActiveRun(null);
-            setRuns((rs) => [...rs.filter((r) => r.id !== finished.id), finished]);
-          }
-          // Reviews never change the model, and the user may have been editing
-          // it during the review (possibly with a save still pending), so the
-          // server's copy must not overwrite what's on screen.
-          if (finished.kind === 'review') return;
-          // A design run rebuilt the mesh (or recorded why it couldn't); a fit run may have edited it.
-          if (finished.kind === 'design' || finished.kind === 'design-feedback' || finished.meshEdit) {
-            api
-              .model(modelId)
-              .then(({ model: m }) => showRebuilt(m))
-              .catch(fail);
+  /** What the server says changed on the open model (the agent applied something, a review ended...). */
+  const onLive = useCallback(
+    (e: LiveEvent) => {
+      switch (e.type) {
+        case 'model': {
+          setModels((ms) => ms.map((x) => (x.id === e.model.id ? e.model : x)));
+          const cur = modelRef.current;
+          if (cur?.id !== e.model.id) return;
+          if (e.meshChanged) {
+            showRebuilt(e.model).catch(fail);
             return;
           }
-          if (finished.status === 'done' && finished.result && modelRef.current?.id === modelId) {
-            setTransform(finished.result.transform, { record: finished.transformBefore, save: false });
+          // The agent's change can be undone like a manual one.
+          if (!transformsEqual(cur.transform, e.model.transform)) {
+            history.current = { past: [...history.current.past.slice(-99), cloneTransform(cur.transform)], future: [] };
+            bumpHistory();
           }
-          api.model(modelId).then(({ model: m }) => {
-            if (modelRef.current?.id === m.id) setModel((cur) => (cur ? { ...cur, codexThreadId: m.codexThreadId, transform: m.transform, fit: m.fit } : m));
-            setModels((ms) => ms.map((x) => (x.id === m.id ? m : x)));
-          });
+          setModel(e.model);
+          return;
         }
-      },
-      () => { subscriptions.current.delete(run.id); },
-    ));
-  }, [setTransform, showRebuilt]);
+        case 'thread':
+          setThreads((ts) => ({ ...ts, [e.thread.id]: e.thread }));
+          return;
+        case 'checkpoint':
+          setCheckpoints((cs) => ({ ...cs, [e.checkpoint.id]: e.checkpoint }));
+          return;
+        case 'review':
+          setReviews((rs) => [...rs.filter((r) => r.id !== e.review.id), e.review].sort((a, b) => a.createdAt.localeCompare(b.createdAt)));
+          return;
+        case 'loop':
+          setLoop(e.state);
+          return;
+      }
+    },
+    [showRebuilt],
+  );
 
   useEffect(() => {
-    loopVersion.current = '';
-    setLoopRunning(false);
     modelRef.current = null;
     setModel(null);
     setPositions(null);
     setMetrics(null);
-    setRuns([]);
-    setActiveRun(null);
+    setCheckpoints({});
+    setReviews([]);
+    setLoop(null);
+    setDockThread(null);
     history.current = { past: [], future: [] };
     bumpHistory();
     viewer.current?.setMesh(null);
-    if (!selectedId) return;
+    if (!selectedId) {
+      setStep('model');
+      return;
+    }
     localStorage.setItem(LAST_MODEL_KEY, selectedId);
     let cancelled = false;
+    const off = api.live(selectedId, (e) => {
+      if (!cancelled) onLive(e);
+    });
     (async () => {
       try {
         setBusy('Loading model…');
-        const [{ model: m, activeRun: active }, buf, rs] = await Promise.all([
+        const [{ model: m, threads: ts }, buf, cps, rvs, lp] = await Promise.all([
           api.model(selectedId),
           fetch(api.meshUrl(selectedId)).then((r) => {
             if (!r.ok) throw new Error(`Could not load the mesh (${r.status})`);
             return r.arrayBuffer();
           }),
-          api.runs(selectedId),
+          api.checkpoints(selectedId),
+          api.reviews(selectedId),
+          api.screenshotReview(selectedId),
         ]);
         if (cancelled) return;
         const pos = parseSTL(buf);
         meshReady.current = geometry.load(pos);
         setModel(m);
         setPositions(pos);
-        setRuns(rs.filter((r) => r.id !== active?.id));
+        setThreads((all) => ({ ...all, ...Object.fromEntries(ts.map((t) => [t.id, t])) }));
+        setCheckpoints(Object.fromEntries(cps.map((c) => [c.id, c])));
+        setReviews(rvs);
+        setLoop(lp);
+        setStep(m.fit.referenceId ? 'fit' : 'pot');
         viewer.current?.setMesh(pos);
         viewer.current?.setTransform(m.transform);
         frameOnLoad.current = true;
-        if (active) {
-          setActiveRun(active);
-          subscribe(m.id, active);
-        }
       } catch (e) {
         if (!cancelled) {
           fail(e);
@@ -352,13 +345,28 @@ export function App() {
     })();
     return () => {
       cancelled = true;
+      off();
     };
-  }, [selectedId, geometry, subscribe]);
+  }, [selectedId, geometry, onLive]);
 
-  // Without a model the phone's fit tab is empty; show the list instead.
+  // Every model gets its agent thread when it's opened (no process runs until a message is sent).
+  const modelId = model?.id;
+  const hasThread = !!model?.threadId;
   useEffect(() => {
-    if (!selectedId) setTab((t) => (t === 'model' ? 'models' : t));
-  }, [selectedId]);
+    if (!modelId || hasThread || !agentAvailable) return;
+    let stale = false;
+    api
+      .agent(modelId, settings)
+      .then((t) => {
+        if (stale || modelRef.current?.id !== modelId) return;
+        setThreads((ts) => ({ ...ts, [t.id]: t }));
+        setModel((m) => (m ? { ...m, threadId: t.id } : m));
+      })
+      .catch(fail);
+    return () => {
+      stale = true;
+    };
+  }, [modelId, hasThread, agentAvailable]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Live measurements, computed in the worker.
   useEffect(() => {
@@ -418,6 +426,11 @@ export function App() {
 
   // ------------------------------------------------------------ actions
 
+  const selectModel = async (id: string) => {
+    await flushSave();
+    setSelectedId(id);
+  };
+
   const importParts = async (file: File, parts: ImportedPart[], combine: boolean) => {
     setPendingImport(null);
     const base = file.name.replace(/\.[^.]+$/, '');
@@ -428,10 +441,7 @@ export function App() {
       last = await api.uploadModel(p.name, file.name, writeBinarySTL(p.positions, p.name));
     }
     setModels(await api.models());
-    if (last) {
-      setSelectedId(last.id);
-      setTab('model');
-    }
+    if (last) setSelectedId(last.id);
   };
 
   const onFiles = async (files: File[]) => {
@@ -486,26 +496,25 @@ export function App() {
     }
   };
 
-  const startCodex = async (mode: CodexRun['kind'], message: string, attachments: PickedImage[] = []) => {
-    if (!model || !viewer.current) return;
-    const shots = viewer.current.capture();
-    if (!await flushSave()) throw new Error('Could not save model edits. Codex was not started.');
-    const run = await api.startRun(model.id, {
-      ...codexSettings,
-      mode,
-      message,
-      images: [
-        { name: 'section', dataUrl: shots.section },
-        { name: 'view', dataUrl: shots.view },
-      ],
-      attachments: attachments.map((a) => ({ name: a.name, dataUrl: a.dataUrl })),
-    });
-    if (run.status === 'running') {
-      if (modelRef.current?.id === model.id) setActiveRun(run);
-      subscribe(model.id, run);
-    } else {
-      if (modelRef.current?.id === model.id) setRuns((rs) => [...rs, run]);
-      if (run.error) throw new Error(run.error);
+  /** Save pending edits, then screenshot both views for the agent. */
+  const prepareSend = useCallback(async () => {
+    if (!(await flushSave())) throw new Error("Couldn't save your edits, so nothing was sent.");
+    return viewer.current?.capture() ?? null;
+  }, [flushSave]);
+
+  /** Fit with Claude: the model's thread gets a message with the views, and the dock shows it. */
+  const startFit = async (instructions: string) => {
+    const m = modelRef.current;
+    if (!m) return;
+    try {
+      const thread = m.threadId ? { id: m.threadId } : await api.agent(m.id, settings);
+      const shots = await prepareSend();
+      const attachments = shots ? [await imageAttachment('view-3d.jpg', shots.view), await imageAttachment('view-section.jpg', shots.section)] : [];
+      await api.command({ type: 'send', thread_id: thread.id, text: instructions.trim() || 'Fit the pot to the nursery pot.', attachments });
+      setDockThread(null);
+      setTab('agent');
+    } catch (e) {
+      fail(e);
     }
   };
 
@@ -532,308 +541,328 @@ export function App() {
     }
   };
 
-  const revertRun = async (run: CodexRun) => {
-    if (!model) return;
-    if (run.kind === 'design' || run.kind === 'design-feedback' || run.meshEdit) {
-      setBuilding(true);
-      try {
-        await showRebuilt(await (run.meshEdit ? api.revertRun(model.id, run.id) : api.revertDesign(model.id, run.id)));
-      } catch (e) {
-        fail(e);
-      } finally {
-        setBuilding(false);
-      }
-      return;
-    }
-    editTransform(run.transformBefore);
-    if (run.fitBefore) {
-      const { referenceId: _ref, ...goals } = run.fitBefore;
-      updateFit(goals);
-    }
-  };
-
-  const rateRun = async (run: CodexRun, rating: CodexRun['rating']) => {
+  const startReview = async () => {
+    const m = modelRef.current;
+    if (!m) return;
     try {
-      const saved = await api.rateRun(run.modelId, run.id, rating);
-      setRuns((rs) => rs.map((r) => (r.id === saved.id ? saved : r)));
+      const shots = await prepareSend();
+      const images = shots ? [{ name: 'view-section', dataUrl: shots.section }, { name: 'view-3d', dataUrl: shots.view }] : [];
+      const review = await api.startReview(m.id, settings, images);
+      setReviews((rs) => [...rs.filter((r) => r.id !== review.id), review]);
+      setDockThread(review.threadId);
+      setTab('agent');
     } catch (e) {
       fail(e);
     }
   };
 
-  const loadLog = (run: CodexRun) => {
-    setLogs((l) => ({ ...l, [run.id]: [] }));
-    api.runEvents(
-      run.modelId,
-      run.id,
-      (e) => setLogs((l) => ({ ...l, [run.id]: addToLog(l[run.id] ?? [], e) })),
-      () => undefined,
-    );
+  const startLoop = async (images: PickedImage[], prompt: string) => {
+    const m = modelRef.current;
+    if (!m) return;
+    setStartingLoop(true);
+    try {
+      if (!(await flushSave())) throw new Error('Could not save model edits. Screenshot review was not started.');
+      setLoop(await api.startScreenshotReview(m.id, images, settings, prompt));
+    } finally {
+      setStartingLoop(false);
+    }
   };
 
-  const onLoopUpdate = useCallback((state: ScreenshotReview | null) => {
-    setLoopRunning(state?.status === 'running');
-    const id = modelRef.current?.id;
-    const version = JSON.stringify(state);
-    const changed = loopVersion.current !== version;
-    if (!id || (!changed && state?.status !== 'running')) return;
-    loopVersion.current = version;
-    if (!state) return;
-    void Promise.all([api.model(id), api.runs(id)]).then(async ([fresh, rs]) => {
-      if (modelRef.current?.id !== id) return;
-      setRuns(rs.filter(r => r.id !== fresh.activeRun?.id));
-      setActiveRun(fresh.activeRun);
-      if (fresh.activeRun) subscribe(id, fresh.activeRun);
-      if (changed) await showRebuilt(fresh.model);
-    }).catch(fail);
-  }, [subscribe, showRebuilt]);
+  const openReview = (reviewId: string) => {
+    const r = reviews.find((x) => x.id === reviewId);
+    if (r) {
+      setDockThread(r.threadId);
+      setTab('agent');
+    }
+  };
 
-  const codexPanel = model && (
-    <CodexPanel
-      key={model.id}
-      settings={codexSettings}
-      onSettings={changeCodexSettings}
-      status={status}
-      model={model}
-      hasReference={!!reference}
-      activeRun={fitActive}
-      reviewRunning={!!reviewActive || loopRunning || startingReview}
-      runs={fitRuns}
-      logs={logs}
-      instructions={instructionsDraft}
-      feedback={feedbackDraft}
-      onInstructions={setInstructionsDraft}
-      onFeedback={setFeedbackDraft}
-      onStart={startCodex}
-      onCancel={() => api.cancelRun(model.id).catch(fail)}
-      onRate={rateRun}
-      onRevert={revertRun}
-      onLoadLog={loadLog}
-      onNewSession={async () => {
-        try {
-          const saved = await api.patchModel(model.id, { resetCodex: true });
-          setModel({ ...model, codexThreadId: saved.codexThreadId, design: saved.design });
-        } catch (e) {
-          fail(e);
-        }
-      }}
-    />
-  );
+  const agentContext: PotAgent | null = model && {
+    model,
+    status,
+    settings,
+    onSettings: changeSettings,
+    checkpoints,
+    onRevert: async (cp) => {
+      // The model comes back over /live, mesh and all.
+      const { checkpoint } = await api.revertCheckpoint(cp.modelId, cp.id);
+      setCheckpoints((cs) => ({ ...cs, [checkpoint.id]: checkpoint }));
+    },
+    onRate: (cp, rating) => {
+      api
+        .rateCheckpoint(cp.modelId, cp.id, rating)
+        .then((saved) => setCheckpoints((cs) => ({ ...cs, [saved.id]: saved })))
+        .catch(fail);
+    },
+    onUseFeedback: (text) => {
+      setDrafts((d) => ({ ...d, [model.id]: text }));
+      setDockThread(null);
+      setTab('agent');
+    },
+    draft: drafts[model.id] ?? '',
+    setDraft: (text) => setDrafts((d) => ({ ...d, [model.id]: text })),
+    prepareSend,
+    lockedBy: lockReason,
+    openThread: (id) => setDockThread(id === model.threadId ? null : id),
+  };
+
+  // ------------------------------------------------------------ steps
+
+  const latestReview = reviews.filter((r) => !r.focus && r.result).at(-1);
+  const reviewCurrent = !!latestReview && !!model && transformsEqual(latestReview.transform, model.transform);
+  const stepStates: Record<StepId, StepState> = {
+    pot: reference ? 'done' : 'todo',
+    model: model ? 'done' : 'todo',
+    fit: !metrics ? 'todo' : metrics.interferes ? 'bad' : metrics.clearanceOk ? 'done' : 'warn',
+    review: !reviewCurrent ? 'todo' : latestReview!.result!.verdict === 'pass' ? 'done' : latestReview!.result!.verdict === 'fail' ? 'bad' : 'warn',
+    export: 'todo',
+  };
+
+  const stepBody = (() => {
+    switch (step) {
+      case 'pot':
+        return (
+          <PotStep
+            references={references}
+            model={model}
+            onUse={(id) => updateFit({ referenceId: id })}
+            onCreate={async (input) => {
+              const ref = await api.createReference(input);
+              setReferences((rs) => [...rs, ref]);
+              if (model && !model.fit.referenceId) updateFit({ referenceId: ref.id });
+            }}
+            onUpdate={async (id, input) => {
+              const ref = await api.updateReference(id, input);
+              setReferences((rs) => rs.map((r) => (r.id === id ? ref : r)));
+            }}
+            onDelete={async (id) => {
+              await api.deleteReference(id);
+              setReferences((rs) => rs.filter((r) => r.id !== id));
+            }}
+            onNext={() => setStep(model ? 'fit' : 'model')}
+          />
+        );
+      case 'model':
+        return (
+          <ModelStep
+            model={model}
+            models={models}
+            references={references}
+            busy={busy}
+            lockedBy={agentBusy ? 'Claude is working on this design.' : loopRunning ? 'The screenshot review is running.' : null}
+            building={building}
+            onBuild={buildDesign}
+            onSelect={(id) => void selectModel(id)}
+            onFiles={onFiles}
+            onNewDesign={() => setDesigning(true)}
+            onRename={async (id, name) => {
+              try {
+                const saved = await api.patchModel(id, { name });
+                setModels((ms) => ms.map((m) => (m.id === id ? saved : m)));
+                if (model?.id === id) setModel({ ...model, name });
+              } catch (e) {
+                fail(e);
+              }
+            }}
+            onDelete={async (id) => {
+              try {
+                await api.deleteModel(id);
+                setModels((ms) => ms.filter((m) => m.id !== id));
+                if (selectedId === id) {
+                  localStorage.removeItem(LAST_MODEL_KEY);
+                  setSelectedId(null);
+                }
+              } catch (e) {
+                fail(e);
+              }
+            }}
+          />
+        );
+      case 'fit':
+        return model ? (
+          <FitStep
+            model={model}
+            reference={reference}
+            metrics={metrics}
+            locked={locked}
+            busy={busy}
+            agentAvailable={agentAvailable && !lockReason}
+            agentBusy={agentBusy}
+            scaleLock={scaleLock}
+            canUndo={history.current.past.length > 0}
+            canRedo={history.current.future.length > 0}
+            onScaleLock={setScaleLock}
+            onFit={updateFit}
+            onTransform={editTransform}
+            onQuickFit={quickFit}
+            onDetectOrientation={detectOrientation}
+            onUndo={undo}
+            onRedo={redo}
+            onAgentFit={startFit}
+            onOverhangs={(avoidOverhangs) => {
+              setModel({ ...model, avoidOverhangs });
+              scheduleSave(model.id, { avoidOverhangs });
+            }}
+          />
+        ) : null;
+      case 'review':
+        return model ? (
+          <ReviewStep
+            model={model}
+            reviews={reviews}
+            loop={loop}
+            settings={settings}
+            onSettings={changeSettings}
+            status={status}
+            canReview={!!reference && agentAvailable}
+            loopDisabled={!reference || !agentAvailable || agentBusy || building || startingLoop}
+            onReview={startReview}
+            onOpenReview={openReview}
+            onStartLoop={startLoop}
+            onCancelLoop={async () => {
+              await api.cancelScreenshotReview(model.id);
+            }}
+          />
+        ) : null;
+      case 'export':
+        return model ? <ExportStep model={model} references={references} metrics={metrics} metricsError={metricsError} exportUrl={api.exportUrl(model.id)} locked={locked} /> : null;
+    }
+  })();
 
   return (
     <div className={`app tab-${tab}`}>
-      <aside className="sidebar left">
+      <header className="topbar">
         <div className="brand">
-          <h1>Potfit</h1>
-          <span className="muted">scale pots to the pot inside</span>
+          <svg className="logo" viewBox="0 0 24 24" aria-hidden>
+            <path d="M3 6h18l-2.4 14.2a1.5 1.5 0 0 1-1.5 1.3H6.9a1.5 1.5 0 0 1-1.5-1.3Z" fill="var(--accent)" />
+            <path d="M2 4.5h20v3H2z" rx="1" fill="var(--accent-strong)" />
+            <path d="M8 2.5c1.5 1.5 1 3-0.2 4M12 1.5c1.2 1.6 0.8 3.4 0 5M16 2.5c-1.5 1.5-1 3 0.2 4" stroke="var(--sage)" strokeWidth="1.6" fill="none" strokeLinecap="round" />
+          </svg>
+          potfit
         </div>
-        <ModelList
-          models={models}
-          selectedId={selectedId}
-          busy={busy}
-          onSelect={async (id) => {
-            await flushSave();
-            setSelectedId(id);
-            setTab('model');
-          }}
-          onFiles={onFiles}
-          onNewDesign={() => setDesigning(true)}
-          onRename={async (id, name) => {
-            try {
-              const saved = await api.patchModel(id, { name });
-              setModels((ms) => ms.map((m) => (m.id === id ? saved : m)));
-              if (model?.id === id) setModel({ ...model, name });
-            } catch (e) {
-              fail(e);
-            }
-          }}
-          onDelete={async (id) => {
-            try {
-              await api.deleteModel(id);
-              setModels((ms) => ms.filter((m) => m.id !== id));
-              if (selectedId === id) {
-                localStorage.removeItem(LAST_MODEL_KEY);
-                setSelectedId(null);
-              }
-            } catch (e) {
-              fail(e);
-            }
-          }}
-        />
-        <ReferencePanel
-          references={references}
-          activeId={model?.fit.referenceId ?? null}
-          onUse={(id) => updateFit({ referenceId: id })}
-          onCreate={async (input) => {
-            const ref = await api.createReference(input);
-            setReferences((rs) => [...rs, ref]);
-            if (model && !model.fit.referenceId) updateFit({ referenceId: ref.id });
-          }}
-          onUpdate={async (id, input) => {
-            const ref = await api.updateReference(id, input);
-            setReferences((rs) => rs.map((r) => (r.id === id ? ref : r)));
-          }}
-          onDelete={async (id) => {
-            await api.deleteReference(id);
-            setReferences((rs) => rs.filter((r) => r.id !== id));
-          }}
-        />
+        <button className="model-switch" onClick={() => { setStep('model'); setTab('steps'); }} title="Your models">
+          <span className="model-name">{model?.name ?? (busy ? 'Loading…' : 'Choose a model')}</span>
+          <span className="caret">▾</span>
+        </button>
+        <Stepper step={step} states={stepStates} enabled={(s) => s === 'pot' || s === 'model' || !!model} onStep={(s) => { setStep(s); setTab('steps'); }} />
+        <div className="status" title={status ? `${status.claude.available ? status.claude.version : `Claude Code: ${status.claude.error}`}\n${status.blender.available ? status.blender.version : 'Blender not installed: no mesh edits or Blender parts'}` : ''}>
+          <span className={`dot ${status?.claude.available ? 'ok' : status ? 'bad' : ''}`} /> Claude
+          <span className={`dot ${status?.blender.available ? 'ok' : 'off'}`} /> Blender
+        </div>
+      </header>
+
+      <aside className="steps-panel">
+        <div className="step-title">
+          <span className="step-number">{STEPS.findIndex((s) => s.id === step) + 1}</span>
+          <h2>{STEPS.find((s) => s.id === step)!.title}</h2>
+        </div>
+        {stepBody}
       </aside>
 
       <main className="stage">
-        <div className="toolbar">
+        <div className="viewer-toolbar">
           <div className="segmented" title="Gizmo (W move, E scale, Q off)">
             {(['translate', 'scale', 'off'] as const).map((m) => (
               <button key={m} className={gizmo === m ? 'on' : ''} onClick={() => setGizmo(m)} disabled={locked && m !== 'off'}>
-                {m === 'translate' ? 'Move' : m === 'scale' ? 'Scale' : 'View only'}
+                {m === 'translate' ? 'Move' : m === 'scale' ? 'Scale' : 'View'}
               </button>
             ))}
           </div>
-          <label className="inline">
-            <input type="checkbox" checked={cutaway} onChange={(e) => setCutaway(e.target.checked)} /> Cut 3D view
-          </label>
-          <label className="inline">
-            Section angle
+          <div className="segmented view-modes">
+            {(['split', '3d', 'section'] as const).map((m) => (
+              <button key={m} className={viewMode === m ? 'on' : ''} onClick={() => setViewMode(m)}>
+                {m === 'split' ? 'Split' : m === '3d' ? '3D' : 'Section'}
+              </button>
+            ))}
+          </div>
+          <label className="inline angle" title="Section plane angle">
+            ∠
             <input type="range" min={0} max={180} step={5} value={sectionAngle} onChange={(e) => setSectionAngle(Number(e.target.value))} />
             <span className="muted">{sectionAngle}°</span>
+          </label>
+          <label className="inline" title="Cut the 3D view along the section plane">
+            <input type="checkbox" checked={cutaway} onChange={(e) => setCutaway(e.target.checked)} /> Cut
           </label>
           <button className="small" onClick={() => viewer.current?.frameAll()} title="Frame (F)">
             Frame
           </button>
-          {error && (
-            <div className="toast" onClick={() => setError(null)}>
-              {error} <span className="muted">(click to dismiss)</span>
-            </div>
-          )}
         </div>
-        <div className={`views show-${shownView}`}>
+        <div className={`views mode-${viewMode}`}>
           <div className="view main">
             <div className="view-label">3D</div>
             <div className="canvas-host" ref={mainEl} />
           </div>
           <div className="view section">
-            <div className="view-label">Section {sectionAngle ? `(${sectionAngle}°)` : '(side on)'}</div>
+            <div className="view-label">Section · {sectionAngle ? `${sectionAngle}°` : 'side on'}</div>
             <div className="canvas-host" ref={sectionEl} />
             <div className="legend">
-              <span className="sw cut" /> cut wall <span className="sw ref" /> reference pot <span className="sw env" /> required clearance
+              <span className="sw cut" /> wall <span className="sw ref" /> nursery pot <span className="sw env" /> clearance
             </div>
           </div>
-          <div className="segmented view-switch">
-            <button className={shownView === 'main' ? 'on' : ''} onClick={() => setShownView('main')}>
-              3D
-            </button>
-            <button className={shownView === 'section' ? 'on' : ''} onClick={() => setShownView('section')}>
-              Section
-            </button>
-          </div>
-          {!model && !busy && <div className="empty">Import a pot model, design a new one, or pick one from the list.</div>}
+          {!model && !busy && (
+            <div className="empty">
+              <p>Import a pot model, design a new one, or pick one from your models.</p>
+              <button className="primary" onClick={() => { setStep('model'); setTab('steps'); }}>Get started</button>
+            </div>
+          )}
         </div>
+        {model && reference && <Hud metrics={metrics} fit={model.fit} />}
+        {agentBusy && <div className="working-banner"><span className="spinner" /> Claude is working on the model; manual edits are paused.</div>}
+        {error && (
+          <div className="toast" role="alert" onClick={() => setError(null)}>
+            {error} <span className="muted">(dismiss)</span>
+          </div>
+        )}
       </main>
 
-      <aside className="sidebar right">
-        {model ? (
-          <>
-            {model.design && (
-              <DesignPanel key={model.id} model={model} references={references} lockedBy={activeRun?.kind ?? (loopRunning || startingReview ? 'feedback' : null)} building={building} onBuild={buildDesign} />
-            )}
-            {model.design && codexPanel}
-            <FitPanel
+      <aside className="dock-panel">
+        {model && agentContext ? (
+          <PotAgentContext.Provider value={agentContext}>
+            <AgentDock
               model={model}
-              references={references}
-              metrics={metrics}
-              metricsError={metricsError}
-              locked={locked}
-              busy={busy}
-              scaleLock={scaleLock}
-              canUndo={history.current.past.length > 0}
-              canRedo={history.current.future.length > 0}
-              onScaleLock={setScaleLock}
-              onFit={updateFit}
-              onTransform={editTransform}
-              onQuickFit={quickFit}
-              onDetectOrientation={detectOrientation}
-              onUndo={undo}
-              onRedo={redo}
-              exportUrl={api.exportUrl(model.id)}
+              threads={threads}
+              reviews={reviews}
+              selected={dockThread}
+              onSelect={setDockThread}
+              available={agentAvailable}
+              onStartOver={() => api.newSession(model.id).catch(fail)}
             />
-            <section className="panel">
-              <h2>Printing preferences</h2>
-              <OverhangSelector value={model.avoidOverhangs !== false} disabled={locked || !!activeRun}
-                onChange={avoidOverhangs => {
-                  setModel({ ...model, avoidOverhangs });
-                  scheduleSave(model.id, { avoidOverhangs });
-                }} />
-            </section>
-            {!model.design && codexPanel}
-            <ScreenshotReviewPanel key={model.id} modelId={model.id}
-              onStart={async (images, prompt) => {
-                setStartingReview(true);
-                try {
-                  if (!await flushSave()) throw new Error('Could not save model edits. Screenshot review was not started.');
-                  const state = await api.startScreenshotReview(model.id, images, codexSettings, prompt);
-                  setLoopRunning(state.status === 'running');
-                  return state;
-                } finally { setStartingReview(false); }
-              }}
-              disabled={!!activeRun || building || !reference || !status?.codex.available} onUpdate={onLoopUpdate} />
-            <ReviewPanel
-              settings={codexSettings}
-              onSettings={changeCodexSettings}
-              status={status}
-              model={model}
-              hasReference={!!reference}
-              activeRun={reviewActive}
-              fitRunning={!!fitActive || loopRunning || startingReview}
-              reviews={reviewRuns}
-              logs={logs}
-              onStart={() => startCodex('review', '')}
-              onCancel={() => api.cancelRun(model.id).catch(fail)}
-              onLoadLog={loadLog}
-              onUseFeedback={(text) => {
-                // Feedback continues the fitting (or design) conversation;
-                // without one, it becomes the instructions for a new session.
-                if (model.design ? model.design.threadId : model.codexThreadId) setFeedbackDraft(text);
-                else setInstructionsDraft(text);
-                document.querySelector('.panel.codex')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-              }}
-            />
-          </>
+          </PotAgentContext.Provider>
         ) : (
-          <section className="panel">
-            <p className="hint">Select a model to fit it.</p>
-          </section>
+          <div className="dock-empty">
+            <h3>Claude</h3>
+            <p>Open a model to fit, design or review it with Claude.</p>
+          </div>
         )}
       </aside>
 
       <nav className="mobile-tabs">
-        <button className={tab === 'models' ? 'on' : ''} onClick={() => setTab('models')}>
-          Models
+        <button className={tab === 'steps' ? 'on' : ''} onClick={() => setTab('steps')}>
+          Steps
         </button>
         <button className={tab === 'view' ? 'on' : ''} onClick={() => setTab('view')}>
           View
         </button>
-        <button className={tab === 'model' ? 'on' : ''} onClick={() => setTab('model')}>
-          {model?.design ? 'Design' : 'Fit'}
-          {activeRun && <span className="spinner" title="Codex is working" />}
+        <button className={tab === 'agent' ? 'on' : ''} onClick={() => setTab('agent')}>
+          Claude
+          {agentBusy && <span className="spinner" title="Claude is working" />}
         </button>
       </nav>
 
       {designing && (
         <DesignDialog
-          settings={codexSettings}
-          onSettings={changeCodexSettings}
+          settings={settings}
+          onSettings={changeSettings}
           status={status}
           references={references}
           referenceId={model?.fit.referenceId ?? null}
-          codexAvailable={status?.codex.available ?? false}
+          agentAvailable={agentAvailable}
           onCancel={() => setDesigning(false)}
           onCreated={async (m) => {
             setDesigning(false);
             await flushSave();
             setModels(await api.models().catch(() => [m]));
-            // Loading the model picks up the design run and streams it.
             setSelectedId(m.id);
-            setTab('model');
+            setTab('agent');
           }}
         />
       )}
