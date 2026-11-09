@@ -1,22 +1,25 @@
 import { OverhangSelector } from './OverhangSelector.tsx';
 import { useState } from 'react';
-import { CodexControls, type CodexControlsProps } from './CodexControls.tsx';
-import { DEFAULT_FIT, type CodexRun, type PotModel, type ReferencePot } from '../../shared/types.ts';
+import { AgentSettingsControls } from '../agent/AgentSettings.tsx';
+import { DEFAULT_FIT, type AgentSettings, type PotModel, type ReferencePot, type ServerStatus } from '../../shared/types.ts';
 import { api } from '../api.ts';
 import { ImagePicker, type PickedImage } from './ImagePicker.tsx';
 import { NumberField } from './NumberField.tsx';
 
-interface Props extends CodexControlsProps {
+interface Props {
+  settings: AgentSettings;
+  onSettings(settings: AgentSettings): void;
+  status: ServerStatus | null;
   references: ReferencePot[];
   /** Reference pot to start with. */
   referenceId: string | null;
-  codexAvailable: boolean;
-  onCreated(model: PotModel, run: CodexRun | null): void;
+  agentAvailable: boolean;
+  onCreated(model: PotModel): void;
   onCancel(): void;
 }
 
 /** New pot from a description and/or reference images. */
-export function DesignDialog({ references, referenceId, codexAvailable, onCreated, onCancel, settings, onSettings, status }: Props) {
+export function DesignDialog({ references, referenceId, agentAvailable, onCreated, onCancel, settings, onSettings, status }: Props) {
   const [avoidOverhangs, setAvoidOverhangs] = useState(true);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -25,26 +28,26 @@ export function DesignDialog({ references, referenceId, codexAvailable, onCreate
   const [clearance, setClearance] = useState(DEFAULT_FIT.clearance);
   const [topOffset, setTopOffset] = useState<number | null>(DEFAULT_FIT.topOffset);
   const [floorGap, setFloorGap] = useState(DEFAULT_FIT.floorGap);
-  const [useCodex, setUseCodex] = useState(codexAvailable);
+  const [useAgent, setUseAgent] = useState(agentAvailable);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const ready = !!refId && (!useCodex || description.trim() !== '' || images.length > 0);
+  const ready = !!refId && (!useAgent || description.trim() !== '' || images.length > 0);
 
   const create = async () => {
     setSending(true);
     setError(null);
     try {
-      const { model, run } = await api.createDesign({
+      const { model } = await api.createDesign({
         name: name.trim(),
         avoidOverhangs,
         description: description.trim(),
         images: images.map((i) => ({ name: i.name, dataUrl: i.dataUrl })),
         fit: { referenceId: refId, clearance, topOffset, floorGap },
-        codex: useCodex,
+        agent: useAgent,
         ...settings,
       });
-      onCreated(model, run);
+      onCreated(model);
     } catch (e) {
       setError((e as Error).message);
       setSending(false);
@@ -56,7 +59,7 @@ export function DesignDialog({ references, referenceId, codexAvailable, onCreate
       <div className="modal design-dialog" onClick={(e) => e.stopPropagation()}>
         <h2>New design</h2>
         <p className="muted">
-          Describe the pot, add pictures of pots or characters you like, or both. Codex designs it around the nursery pot, ready to print, and you can
+          Describe the pot, add pictures of pots or characters you like, or both. Claude designs it around the nursery pot, ready to print, and you can
           adjust it afterwards.
         </p>
         <label className="field stacked">
@@ -75,7 +78,7 @@ export function DesignDialog({ references, referenceId, codexAvailable, onCreate
         </div>
         <label className="field">
           <span>Name</span>
-          <input value={name} placeholder="Codex will suggest one" onChange={(e) => setName(e.target.value)} />
+          <input value={name} placeholder="Claude will suggest one" onChange={(e) => setName(e.target.value)} />
         </label>
         <label className="field">
           <span>Nursery pot</span>
@@ -88,7 +91,7 @@ export function DesignDialog({ references, referenceId, codexAvailable, onCreate
             ))}
           </select>
         </label>
-        {references.length === 0 && <p className="hint">Add a nursery pot under Reference pots first.</p>}
+        {references.length === 0 && <p className="hint">Add a nursery pot in step 1 first.</p>}
         <div className="grid-fields">
           <label className="field">
             <span title="Diametral: the radial gap is half of this">Clearance (⌀)</span>
@@ -108,16 +111,16 @@ export function DesignDialog({ references, referenceId, codexAvailable, onCreate
         </div>
         <OverhangSelector value={avoidOverhangs} onChange={setAvoidOverhangs} disabled={sending} />
         <label className="inline">
-          <input type="checkbox" checked={useCodex} disabled={!codexAvailable} onChange={(e) => setUseCodex(e.target.checked)} /> Design it with Codex
-          {!codexAvailable && <span className="muted"> (Codex isn't available)</span>}
+          <input type="checkbox" checked={useAgent} disabled={!agentAvailable} onChange={(e) => setUseAgent(e.target.checked)} /> Design it with Claude
+          {!agentAvailable && <span className="muted"> (Claude Code isn't available)</span>}
         </label>
-        {useCodex && <CodexControls settings={settings} onSettings={onSettings} status={status} disabled={sending} />}
-        {!useCodex && <p className="hint">Without Codex you get a plain pot with a few settings to adjust.</p>}
+        {useAgent && <AgentSettingsControls settings={settings} onChange={onSettings} status={status} disabled={sending} />}
+        {!useAgent && <p className="hint">Without Claude you get a plain pot with a few settings to adjust.</p>}
         {error && <p className="error">{error}</p>}
         <div className="row end">
           <button onClick={onCancel}>Cancel</button>
           <button className="primary" disabled={!ready || sending} onClick={create}>
-            {sending ? 'Creating…' : useCodex ? 'Design it' : 'Create'}
+            {sending ? 'Creating…' : useAgent ? 'Design it' : 'Create'}
           </button>
         </div>
       </div>

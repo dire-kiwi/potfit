@@ -3,51 +3,73 @@ import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { CommandError, type Attachment, type ThreadEvent } from '@dire-kiwi/agent-threads-node';
 import { analyzeMesh, initialTransform } from '../shared/fit.ts';
 import { parseSTL, writeBinarySTL } from '../shared/stl.ts';
 import { applyTransform, computeBounds, validateTransform, yUpToZUp } from '../shared/transform.ts';
-import { DEFAULT_FIT, type CodexRunKind, type FitSettings, type ModelPatch, type ParamValues, type ReferenceInput, type ServerStatus } from '../shared/types.ts';
+import { AGENT_EFFORTS, DEFAULT_FIT, type FitSettings, type LiveEvent, type ModelPatch, type ParamValues, type ReferenceInput, type ServerStatus } from '../shared/types.ts';
+import { Agent } from './agent/agent.ts';
+import { Checkpoints, Conflict } from './agent/checkpoints.ts';
+import { Live } from './agent/live.ts';
+import { Reviews } from './agent/reviews.ts';
+import { BadRequest, CLAUDE_MODELS, claudeVersion, parseAgentSettings } from './agent/settings.ts';
 import { blenderVersion } from './blender.ts';
-import { BadRequest, CodexRunner, Conflict, SANDBOX_MODES, codexVersion, type SandboxMode } from './codex.ts';
 import { BuildError, DEFAULT_DESIGN_NAME, Designs, type DesignImage } from './design.ts';
+import { migrateFromCodex } from './migrate.ts';
 import { ScreenshotReviews } from './screenshot-review.ts';
 import { NotFound, Store } from './store.ts';
-import { codexModels, parseCodexSettings } from './codex-settings.ts';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const port = Number(process.env.POTFIT_PORT ?? 5174);
-// The API is unauthenticated and drives Codex under the user's login, so it
+// The API is unauthenticated and drives Claude Code under the user's login, so it
 // only listens on loopback unless POTFIT_HOST says otherwise.
 const host = process.env.POTFIT_HOST || '127.0.0.1';
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
 const loopbackOnly = LOOPBACK_HOSTS.has(host);
 const dataDir = resolve(process.env.POTFIT_DATA ?? join(root, 'data'));
-const codexBin = process.env.POTFIT_CODEX_BIN ?? 'codex';
-// Codex's own sandbox needs user namespaces, which a default Docker container
-// doesn't allow; there the container is the sandbox (danger-full-access).
-const codexSandbox = (process.env.POTFIT_CODEX_SANDBOX || 'workspace-write') as SandboxMode;
-if (!SANDBOX_MODES.includes(codexSandbox)) {
-  console.error(`potfit: POTFIT_CODEX_SANDBOX must be one of ${SANDBOX_MODES.join(', ')}`);
+const claudeBin = process.env.POTFIT_CLAUDE_BIN || 'claude';
+const defaultModel = process.env.POTFIT_CLAUDE_MODEL || null;
+const defaultEffort = process.env.POTFIT_CLAUDE_EFFORT || null;
+try {
+  parseAgentSettings({ model: defaultModel, effort: defaultEffort });
+} catch (e) {
+  console.error(`potfit: POTFIT_CLAUDE_MODEL / POTFIT_CLAUDE_EFFORT: ${(e as Error).message} (efforts: ${AGENT_EFFORTS.join(', ')})`);
   process.exit(1);
 }
 
-// Codex can run Blender, when there is one, to edit meshes and make parts for designs.
+// The agent can run Blender, when there is one, to edit meshes and make parts for designs.
 const blenderBin = process.env.POTFIT_BLENDER_BIN || 'blender';
 const blender = { bin: blenderBin, status: blenderVersion(blenderBin) };
 
 const store = new Store(dataDir);
 await store.init();
+const migrated = await migrateFromCodex(dataDir);
+if (migrated?.models) console.log(`potfit: removed Codex's runs and workspaces (${migrated.runs} runs in ${migrated.models} models); see README.md`);
 const toolPath = join(root, 'tools', 'pot-tool.ts');
-const designs = new Designs(store, { root, toolPath, blender });
-const codex = new CodexRunner(store, designs, {
-  bin: codexBin,
-  model: process.env.POTFIT_CODEX_MODEL || null,
-  sandbox: codexSandbox,
+const designs = new Designs(store, { root, toolPath });
+const live = new Live();
+const checkpoints = new Checkpoints(store, designs);
+const reviews = new Reviews(store, live);
+let screenshotReviews: ScreenshotReviews;
+const agent = new Agent({
+  store,
+  designs,
+  checkpoints,
+  live,
+  threadsDb: join(dataDir, 'threads.db'),
   toolPath,
   blender,
+  claude: { bin: claudeBin },
+  defaultModel,
+  defaultEffort,
+  submitReview: (modelId, reviewId, result) => reviews.submit(modelId, reviewId, result),
+  onReviewTurnEnd: (modelId, reviewId) => void reviews.turnEnded(modelId, reviewId).catch((e) => console.error(e)),
+  lockedBy: (modelId) => (screenshotReviews?.isRunning(modelId) ? 'The screenshot review is driving this model; cancel it first' : null),
 });
-await codex.recover();
-const screenshotReviews = new ScreenshotReviews(store, codex);
+reviews.agent = agent;
+await agent.init();
+await reviews.recover();
+screenshotReviews = new ScreenshotReviews(store, agent, reviews, live);
 await screenshotReviews.recover();
 
 const app = express();
@@ -132,12 +154,15 @@ async function defaultReferenceId(): Promise<string | null> {
   return recent ?? refs.at(-1)?.id ?? null;
 }
 
-const RUN_KINDS: CodexRunKind[] = ['fit', 'feedback', 'review', 'design', 'design-feedback'];
 
 // ---------------------------------------------------------------- status
 
 app.get('/api/status', route(async (_req, res) => {
-  const status: ServerStatus = { codex: { ...await codexVersion(codexBin), defaultModel: process.env.POTFIT_CODEX_MODEL || null, models: await codexModels() }, blender: await blender.status, dataDir };
+  const status: ServerStatus = {
+    claude: { ...(await claudeVersion(claudeBin)), defaultModel, defaultEffort, models: CLAUDE_MODELS },
+    blender: await blender.status,
+    dataDir,
+  };
   res.json(status);
 }));
 
@@ -186,43 +211,62 @@ app.post('/api/models', express.raw({ type: () => true, limit: '1gb' }), route(a
       triangleCount: positions.length / 9,
       transform: initialTransform(positions, analysis),
       fit: { ...DEFAULT_FIT, referenceId: await defaultReferenceId() },
-      codexThreadId: null,
+      threadId: null,
     },
     writeBinarySTL(positions, `potfit: ${name}`),
   );
   res.status(201).json(model);
 }));
 
+/** The images a send command attaches, as the agent takes them. */
+const asAttachments = (images: DesignImage[]): Attachment[] =>
+  images.map((img) => ({ kind: 'image', name: img.name, media_type: img.ext === 'jpg' ? 'image/jpeg' : `image/${img.ext}`, data: img.data.toString('base64') }));
+
 // A pot designed from a description and/or reference images. It starts as a
-// plain pot built around the reference pot, and Codex redesigns it unless
-// `codex` is false.
+// plain pot built around the reference pot, and the agent redesigns it unless
+// `agent` is false.
 app.post('/api/designs', route(async (req, res) => {
   const b = (req.body ?? {}) as Record<string, unknown>;
   const description = typeof b.description === 'string' ? b.description.trim() : '';
   const images = decodeImages(b.images, 8);
-  const useCodex = b.codex !== false;
-  const settings = parseCodexSettings(b);
-  if (useCodex && !description && images.length === 0) throw new BadRequest('Describe the pot or add a reference image');
+  const useAgent = b.agent !== false;
+  const settings = parseAgentSettings(b);
+  if (useAgent && !description && images.length === 0) throw new BadRequest('Describe the pot or add a reference image');
   const fit: FitSettings = { ...DEFAULT_FIT, referenceId: await defaultReferenceId(), ...fitPatch(b.fit) };
   const ref = fit.referenceId ? await store.getReference(fit.referenceId) : null;
   if (!ref) throw new BadRequest('Choose a reference pot for the design');
   const name = typeof b.name === 'string' && b.name.trim() ? b.name.trim() : DEFAULT_DESIGN_NAME;
   if (b.avoidOverhangs !== undefined && typeof b.avoidOverhangs !== 'boolean') throw new BadRequest('avoidOverhangs must be a boolean');
-  const model = await designs.create({ name, description, images, fit, ref, avoidOverhangs: b.avoidOverhangs !== false });
-  const run = useCodex ? await codex.start(model.id, { mode: 'design', message: description, images: [], ...settings }) : null;
-  res.status(201).json({ model, run });
+  // The agent's first message carries the pictures, which saves them as the design's references.
+  let model = await designs.create({ name, description, images: useAgent ? [] : images, fit, ref, avoidOverhangs: b.avoidOverhangs !== false });
+  if (useAgent) {
+    const thread = await agent.mainThread(model.id, settings);
+    await agent.handle({ type: 'send', thread_id: thread.id, text: description || 'Design a pot like the attached pictures.', attachments: asAttachments(images) });
+    model = await store.getModel(model.id);
+  }
+  res.status(201).json({ model });
 }));
 
 app.get('/api/models/:id', route(async (req, res) => {
   const model = await store.getModel(param(req, 'id'));
-  res.json({ model, activeRun: codex.activeRun(model.id) });
+  res.json({ model, threads: agent.threadsOf(model.id) });
 }));
+
+/** Why the model can't be edited now, or nothing. */
+async function editLock(id: string): Promise<string | null> {
+  if (screenshotReviews.isRunning(id)) return 'Screenshot review is working on this model; cancel it before editing';
+  if (agent.isBusy(await store.getModel(id))) return 'The agent is working on this model; wait for it to finish or stop it';
+  return null;
+}
+const notWhileRunning = async (id: string) => {
+  const why = await editLock(id);
+  if (why) throw new Conflict(why);
+};
 
 app.patch('/api/models/:id', route(async (req, res) => {
   const id = param(req, 'id');
-  if (screenshotReviews.isRunning(id)) throw new Conflict('Screenshot review is working on this model; cancel it before editing');
   const b = (req.body ?? {}) as Record<string, unknown>;
-  const patch: ModelPatch & { codexThreadId?: null; design?: { threadId: null } } = {};
+  const patch: ModelPatch = {};
   if ('name' in b) {
     if (typeof b.name !== 'string' || !b.name.trim()) throw new BadRequest('name must be a non-empty string');
     patch.name = b.name.trim();
@@ -230,26 +274,26 @@ app.patch('/api/models/:id', route(async (req, res) => {
   if ('transform' in b) {
     const err = validateTransform(b.transform);
     if (err) throw new BadRequest(err);
-    // A review works on its own copy of the fit, so editing during one is fine.
-    const active = codex.activeRun(id);
-    if (active && active.kind !== 'review') throw new Conflict('Codex is working on this model; wait for it to finish or cancel it');
+    await notWhileRunning(id);
     patch.transform = b.transform as ModelPatch['transform'];
   }
   if ('avoidOverhangs' in b) {
     if (typeof b.avoidOverhangs !== 'boolean') throw new BadRequest('avoidOverhangs must be a boolean');
-    if (codex.activeRun(id)) throw new Conflict('Wait for Codex to finish before changing printing preferences');
+    await notWhileRunning(id);
     patch.avoidOverhangs = b.avoidOverhangs;
   }
-  if ('fit' in b) patch.fit = fitPatch(b.fit) as FitSettings;
-  // Forget the conversation: the fitting one, and a designed pot's design one.
-  if (b.resetCodex === true) Object.assign(patch, { codexThreadId: null, design: { threadId: null } });
+  if ('fit' in b) {
+    await notWhileRunning(id);
+    patch.fit = fitPatch(b.fit) as FitSettings;
+  }
   res.json(await store.updateModel(id, patch));
 }));
 
 app.delete('/api/models/:id', route(async (req, res) => {
   const id = param(req, 'id');
-  if (screenshotReviews.isRunning(id)) throw new Conflict('Cancel screenshot review before deleting the model');
-  codex.cancel(id);
+  await store.getModel(id);
+  screenshotReviews.cancel(id);
+  await agent.forgetModel(id);
   await store.deleteModel(id);
   res.status(204).end();
 }));
@@ -276,90 +320,156 @@ app.get('/api/models/:id/export.stl', route(async (req, res) => {
   res.type('model/stl').send(Buffer.from(writeBinarySTL(out, `potfit export: ${model.name}`)));
 }));
 
+// Images the agent rendered (render_views), and a design's reference images.
+app.get(/^\/api\/models\/([0-9a-f-]{36})\/files\/((?:agent|design|reviews\/[0-9a-f-]{36})\/renders\/[\w.-]+\.png|design\/refs\/[\w-]+\.(?:png|jpg|webp))$/, route(async (req, res) => {
+  const id = String(req.params[0]);
+  const rel = String(req.params[1]);
+  if (!existsSync(join(store.modelDir(id), rel))) throw new NotFound('file not found');
+  res.sendFile(rel, { root: store.modelDir(id) });
+}));
+
+// Server-sent events: what changes on the model while it's open (see LiveEvent).
+app.get('/api/models/:id/live', route(async (req, res) => {
+  const id = param(req, 'id');
+  await store.getModel(id);
+  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
+  const send = (e: LiveEvent) => res.write(`data: ${JSON.stringify(e)}\n\n`);
+  const off = live.subscribe(id, send);
+  for (const thread of agent.threadsOf(id)) send({ type: 'thread', thread });
+  const loop = await screenshotReviews.get(id);
+  if (loop) send({ type: 'loop', state: loop });
+  const ping = setInterval(() => res.write(': ping\n\n'), 15000);
+  res.on('close', () => {
+    clearInterval(ping);
+    off();
+  });
+}));
+
+// ------------------------------------------------------------------ agent
+
+// The model's fitting or design thread, made if it hasn't one yet.
+app.post('/api/models/:id/agent', route(async (req, res) => {
+  const thread = await agent.mainThread(param(req, 'id'), parseAgentSettings(req.body ?? {}));
+  res.json(agent.threadState(thread.id));
+}));
+
+// Start over: the next message starts a new conversation (the thread keeps what was said).
+app.post('/api/models/:id/agent/new-session', route(async (req, res) => {
+  await agent.startOver(param(req, 'id'));
+  res.status(204).end();
+}));
+
+app.get('/api/models/:id/checkpoints', route(async (req, res) => {
+  res.json(await store.listCheckpoints(param(req, 'id')));
+}));
+
+// Put the model back as it was before a change the agent made.
+app.post('/api/models/:id/checkpoints/:cid/revert', route(async (req, res) => {
+  const id = param(req, 'id');
+  await notWhileRunning(id);
+  const { model, checkpoint, meshChanged } = await checkpoints.revert(id, param(req, 'cid'));
+  live.emit(id, { type: 'model', model, meshChanged });
+  live.emit(id, { type: 'checkpoint', checkpoint });
+  res.json({ model, checkpoint, meshChanged });
+}));
+
+app.patch('/api/models/:id/checkpoints/:cid', route(async (req, res) => {
+  const rating = (req.body ?? {}).rating;
+  if (rating !== null && rating !== 'accepted' && rating !== 'rejected') throw new BadRequest('rating must be accepted, rejected or null');
+  const checkpoint = await checkpoints.rate(param(req, 'id'), param(req, 'cid'), rating);
+  live.emit(checkpoint.modelId, { type: 'checkpoint', checkpoint });
+  res.json(checkpoint);
+}));
+
+app.get('/api/models/:id/reviews', route(async (req, res) => {
+  res.json(await reviews.list(param(req, 'id')));
+}));
+
+// An independent review of the fit as it is now, in a thread of its own.
+app.post('/api/models/:id/reviews', route(async (req, res) => {
+  const { review } = await reviews.start(param(req, 'id'), parseAgentSettings(req.body ?? {}), { images: asAttachments(decodeImages(req.body?.images, 4)) });
+  res.status(202).json(review);
+}));
+
+app.post('/api/models/:id/reviews/:rid/cancel', route(async (req, res) => {
+  res.json(await reviews.cancel(param(req, 'id'), param(req, 'rid')));
+}));
+
 app.get('/api/models/:id/screenshot-review', route(async (req, res) => {
   await store.getModel(param(req, 'id'));
   res.json(await screenshotReviews.get(param(req, 'id')));
 }));
+
 app.post('/api/models/:id/screenshot-review', route(async (req, res) => {
   if (req.body?.prompt !== undefined && typeof req.body.prompt !== 'string') throw new BadRequest('prompt must be a string');
   const targets = decodeImages(req.body?.images, 1);
   if (targets.length !== 1) throw new BadRequest('Attach one target screenshot');
-  res.status(202).json(await screenshotReviews.start(param(req, 'id'), targets[0], parseCodexSettings(req.body), req.body?.prompt ?? ''));
+  res.status(202).json(await screenshotReviews.start(param(req, 'id'), targets[0], parseAgentSettings(req.body), req.body?.prompt ?? ''));
 }));
 
-// ------------------------------------------------------------------ codex
-
-app.get('/api/models/:id/runs', route(async (req, res) => {
-  res.json(await store.listRuns(param(req, 'id')));
+app.post('/api/models/:id/screenshot-review/cancel', route(async (req, res) => {
+  res.json({ cancelled: screenshotReviews.cancel(param(req, 'id')) });
 }));
 
-app.post('/api/models/:id/runs', route(async (req, res) => {
-  if (screenshotReviews.isRunning(param(req, 'id'))) throw new Conflict('Screenshot review is already working on this model');
-  const b = (req.body ?? {}) as Record<string, unknown>;
-  const mode = RUN_KINDS.includes(b.mode as CodexRunKind) ? (b.mode as CodexRunKind) : 'fit';
-  const run = await codex.start(param(req, 'id'), {
-    ...parseCodexSettings(b),
-    mode,
-    message: typeof b.message === 'string' ? b.message : '',
-    images: decodeImages(b.images, 4),
-    attachments: decodeImages(b.attachments, 8),
+// ---------------------------------------------------------------- threads
+// agent-threads over SSE and POST (its docs/transport.md): a thread's snapshot and then its
+// events, saved events after a seq, earlier items, and commands. Only potfit's threads.
+
+const potfitThread = async (tid: string) => {
+  const t = await agent.sdk.get(tid);
+  if (!t || typeof t.metadata?.modelId !== 'string') throw new NotFound(`thread ${tid} not found`);
+  return t;
+};
+
+app.get('/api/threads/:tid/stream', route(async (req, res) => {
+  const tid = param(req, 'tid');
+  await potfitThread(tid);
+  const send = (event: string, data: unknown) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  // Subscribe first, holding events until the snapshot is out, so none are missed in between.
+  let held: ThreadEvent[] | null = [];
+  const off = agent.sdk.subscribe((e) => {
+    if (e.thread_id !== tid) return;
+    if (held) held.push(e);
+    else send('event', e);
   });
-  res.status(202).json(run);
-}));
-
-app.post('/api/models/:id/runs/cancel', route(async (req, res) => {
-  const id = param(req, 'id');
-  res.json({ cancelled: screenshotReviews.cancel(id) || codex.cancel(id) });
-}));
-
-// Undo a fit run that edited the mesh: the mesh, placement and fit settings from before it.
-app.post('/api/models/:id/runs/:runId/revert', route(async (req, res) => {
-  notWhileRunning(param(req, 'id'));
-  res.json(await codex.revertMeshEdit(param(req, 'id'), param(req, 'runId')));
-}));
-
-app.patch('/api/models/:id/runs/:runId', route(async (req, res) => {
-  const run = await store.getRun(param(req, 'id'), param(req, 'runId'));
-  const rating = (req.body ?? {}).rating;
-  if (rating !== null && rating !== 'accepted' && rating !== 'rejected') throw new BadRequest('rating must be accepted, rejected or null');
-  const next = { ...run, rating };
-  await store.saveRun(next);
-  res.json(next);
-}));
-
-// Server-sent events: replays the run's events, then streams until it ends.
-app.get('/api/models/:id/runs/:runId/events', route(async (req, res) => {
-  const id = param(req, 'id'), runId = param(req, 'runId');
-  await store.getRun(id, runId);
-  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
-  const send = (e: unknown) => res.write(`data: ${JSON.stringify(e)}\n\n`);
-  const unsubscribe = codex.subscribe(id, runId, (e) => {
-    send(e);
-    if (e.type === 'result') res.end();
-  });
-  if (!unsubscribe) {
-    for (const e of await store.readEvents(id, runId)) send(e);
-    send({ type: 'end' });
-    res.end();
-    return;
-  }
   const ping = setInterval(() => res.write(': ping\n\n'), 15000);
   res.on('close', () => {
     clearInterval(ping);
-    unsubscribe();
+    off();
   });
+  const snapshot = await agent.sdk.snapshot(tid, { limit: 300 });
+  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
+  send('snapshot', snapshot);
+  for (const e of held) send('event', e);
+  held = null;
+}));
+
+app.get('/api/threads/:tid/events', route(async (req, res) => {
+  const tid = param(req, 'tid');
+  await potfitThread(tid);
+  res.json(await agent.sdk.eventsSince(tid, Number(req.query.after ?? 0)));
+}));
+
+app.get('/api/threads/:tid/items', route(async (req, res) => {
+  const tid = param(req, 'tid');
+  await potfitThread(tid);
+  res.json(await agent.sdk.itemsBefore(tid, Number(req.query.before ?? 0), Math.min(500, Number(req.query.limit ?? 200))));
+}));
+
+app.post('/api/threads/:tid/commands', route(async (req, res) => {
+  const tid = param(req, 'tid');
+  const command = req.body;
+  if (command?.thread_id !== tid) throw new BadRequest('the command is for another thread');
+  await agent.handle(command);
+  res.status(204).end();
 }));
 
 // ---------------------------------------------------------------- designs
 
-const notWhileRunning = (id: string) => {
-  if (screenshotReviews.isRunning(id) || codex.activeRun(id)) throw new Conflict('Codex is working on this model; wait for it to finish or cancel it');
-};
-
 // Rebuild with new parameter values, or with an edited script (kept only if it builds).
 app.post('/api/models/:id/design/build', route(async (req, res) => {
   const id = param(req, 'id');
-  notWhileRunning(id);
+  await notWhileRunning(id);
   const b = (req.body ?? {}) as Record<string, unknown>;
   let params: ParamValues | undefined;
   if (b.params !== undefined) {
@@ -391,18 +501,6 @@ app.get('/api/models/:id/design/refs/:name', route(async (req, res) => {
   res.sendFile(name, { root: dir });
 }));
 
-// Put back the script and parameters from before a design run.
-app.post('/api/models/:id/design/revert', route(async (req, res) => {
-  const id = param(req, 'id');
-  notWhileRunning(id);
-  const run = await store.getRun(id, String((req.body ?? {}).runId ?? ''));
-  if (run.kind !== 'design' && run.kind !== 'design-feedback') throw new BadRequest('Only design runs can be reverted here');
-  const before = join(store.runDir(id, run.id), 'before.mjs');
-  if (!existsSync(before)) throw new NotFound('This run has no saved script to go back to');
-  await designs.restoreParts(id, store.runDir(id, run.id));
-  res.json(await designs.rebuild(id, { script: await readFile(before, 'utf8'), params: run.paramsBefore ?? {}, resetParams: true }));
-}));
-
 // ------------------------------------------------------------- static app
 
 const dist = join(root, 'dist');
@@ -412,7 +510,7 @@ if (existsSync(dist)) {
 }
 
 app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
-  const status = err instanceof NotFound ? 404 : err instanceof BadRequest ? 400 : err instanceof Conflict ? 409 : err instanceof BuildError ? 422 : 500;
+  const status = err instanceof NotFound ? 404 : err instanceof BadRequest || err instanceof CommandError || err instanceof SyntaxError ? 400 : err instanceof Conflict ? 409 : err instanceof BuildError ? 422 : 500;
   if (status === 500) console.error(err);
   if (res.headersSent) return res.end();
   res.status(status).json({ error: err.message });
@@ -428,7 +526,17 @@ app.listen(port, host, (err?: Error) => {
   console.log(`potfit API on http://${shown}:${port} (data in ${dataDir})`);
   if (!loopbackOnly) {
     console.warn(
-      `warning: POTFIT_HOST=${host} exposes an unauthenticated API that runs Codex as you; anyone who can reach it can read your files through Codex.`,
+      `warning: POTFIT_HOST=${host} exposes an unauthenticated API that runs Claude Code as you; anyone who can reach it can use your Claude login and run Blender scripts on this machine.`,
     );
   }
 });
+
+// Stop the threads' Claude processes and save everything before going.
+let stopping = false;
+for (const sig of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(sig, () => {
+    if (stopping) process.exit(1);
+    stopping = true;
+    agent.close().finally(() => process.exit(0));
+  });
+}

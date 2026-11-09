@@ -77,13 +77,15 @@ Measured cavities, from `macetas_vs_v3_dimensions.json`:
 ## Potfit: fitting and designing pots
 
 `potfit/` is a three.js web app that scales and aligns any pot model (STL,
-3MF, OBJ, GLB, PLY) around a saved reference nursery pot. Codex does the
-fitting; you review it in 3D and section views, give feedback or adjust it by
-hand, and export the result. Codex can also design a new pot from a
-description or reference pictures, built around the nursery pot. Where
-Blender is installed, Codex also uses it headless to change an imported pot's
-shape (filling the space under the nursery pot, say) and to model parts for
-designed pots. See [potfit/README.md](potfit/README.md).
+3MF, OBJ, GLB, PLY) around a saved reference nursery pot. Claude (Claude Code,
+through [agent-threads](https://github.com/dire-kiwi/agent-threads)) does the
+fitting with potfit's own tools; you follow it in a docked conversation, review
+the fit in 3D and section views, give feedback or adjust it by hand, and export
+the result. Claude can also design a new pot from a description or reference
+pictures, built around the nursery pot, and independent Claude reviewers check
+a fit. Where Blender is installed, Claude also uses it headless to change an
+imported pot's shape (filling the space under the nursery pot, say) and to
+model parts for designed pots. See [potfit/README.md](potfit/README.md).
 
 ## Notes
 

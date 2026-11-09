@@ -9,7 +9,6 @@ import { DEFAULT_FIT, type ReferencePot } from '../shared/types.ts';
 import { buildDesign, overhangs } from '../tools/design-build.ts';
 import { normaliseParams, resolveParams, type DesignInput } from '../tools/potlib.ts';
 import { renderViews } from '../tools/render3d.ts';
-import { parseDesignResult } from '../server/codex.ts';
 import { BuildError, Designs } from '../server/design.ts';
 import { Store } from '../server/store.ts';
 
@@ -135,16 +134,10 @@ test('preview renders shaded views', async () => {
   assert.deepEqual([...img.png.subarray(1, 4)].map((c) => String.fromCharCode(c)).join(''), 'PNG');
 });
 
-test('design answers are parsed leniently', () => {
-  const r = parseDesignResult(JSON.stringify({ title: '  Reading buddy ', summary: 's', warnings: ['w'], confidence: 'low' }));
-  assert.deepEqual(r, { title: 'Reading buddy', summary: 's', warnings: ['w'], confidence: 'low' });
-  assert.equal(parseDesignResult('{"summary": "x"}').confidence, 'medium');
-});
-
 test('the server builds scripts in a locked-down process', async () => {
   const store = new Store(mkdtempSync(join(tmpdir(), 'potfit-store-')));
   await store.init();
-  const designs = new Designs(store, { root, toolPath: join(root, 'tools', 'pot-tool.ts'), blender: { bin: 'blender', status: Promise.resolve({ available: false, version: null, error: 'not needed' }) } });
+  const designs = new Designs(store, { root, toolPath: join(root, 'tools', 'pot-tool.ts') });
   const ref = await store.createReference({ name: '6cm', topOD: 60, bottomOD: 40, height: 55, notes: '' });
   const fit = { ...DEFAULT_FIT, referenceId: ref.id, topOffset: 8 };
   const model = await designs.create({ name: 'Test', description: 'plain', images: [{ name: 'a', ext: 'png', data: Buffer.from('x') }], fit, ref: ref as ReferencePot });

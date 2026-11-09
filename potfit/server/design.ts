@@ -1,16 +1,14 @@
 // Pots designed in the app. Each has a workspace, models/<id>/design/, with
-// the design script, the user's reference images and what the Codex design
-// agent needs. Builds run in a child process under Node's permission model,
-// since the script is code Codex wrote, and replace the model's mesh.
+// the design script, the user's reference images and what the design agent
+// needs. Builds run in a child process under Node's permission model, since
+// the script is code the agent wrote, and replace the model's mesh.
 
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { chmod, copyFile, cp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { copyFile, cp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { DesignParam, DesignReport, DesignTarget, FitSettings, ParamValues, PotDesign, PotModel, ReferencePot } from '../shared/types.ts';
-import { blenderWrapper, type BlenderOption } from './blender.ts';
-import { designAgentsMd } from './design-prompt.ts';
 import type { Store } from './store.ts';
 
 export class BuildError extends Error {}
@@ -30,7 +28,7 @@ export interface BuildResult {
 
 const BUILD_TIMEOUT_MS = 120_000;
 export const SCRIPT_FILE = 'design.mjs';
-/** Name a design gets until Codex names it or the user does. */
+/** Name a design gets until the agent names it or the user does. */
 export const DEFAULT_DESIGN_NAME = 'New design';
 
 export function targetFor(ref: ReferencePot, fit: FitSettings): DesignTarget {
@@ -47,15 +45,13 @@ export class Designs {
   private store: Store;
   private root: string;
   private toolPath: string;
-  private blender: BlenderOption;
   // One build at a time per model.
   private queues = new Map<string, Promise<unknown>>();
 
-  constructor(store: Store, opts: { root: string; toolPath: string; blender: BlenderOption }) {
+  constructor(store: Store, opts: { root: string; toolPath: string }) {
     this.store = store;
     this.root = opts.root;
     this.toolPath = opts.toolPath;
-    this.blender = opts.blender;
   }
 
   dir(modelId: string) {
@@ -75,7 +71,47 @@ export class Designs {
     return join(this.dir(modelId), 'parts');
   }
 
-  /** Keep a copy of the parts with a run, so the run can be undone. */
+  /** The script of the last build that became the model's mesh. */
+  appliedScript(modelId: string) {
+    return join(this.appliedDir(modelId), SCRIPT_FILE);
+  }
+
+  appliedDirOf(modelId: string) {
+    return this.appliedDir(modelId);
+  }
+
+  /** Where the script and parts of the last build that became the model's mesh are kept. */
+  private appliedDir(modelId: string) {
+    return join(this.dir(modelId), '.applied');
+  }
+
+  /** Remember the script and parts as they were built, so unapplied edits can be undone. */
+  private async markApplied(modelId: string) {
+    const dir = this.appliedDir(modelId);
+    await rm(dir, { recursive: true, force: true });
+    await mkdir(dir, { recursive: true });
+    await copyFile(this.scriptPath(modelId), join(dir, SCRIPT_FILE));
+    await this.snapshotParts(modelId, dir);
+  }
+
+  /**
+   * Put back the last applied script and parts if design.mjs has changed since (the agent's turn
+   * ended without applying its edits). The unapplied script is kept as unapplied.mjs. Returns
+   * whether anything was put back.
+   */
+  async restoreApplied(modelId: string): Promise<boolean> {
+    const dir = this.appliedDir(modelId);
+    const applied = join(dir, SCRIPT_FILE);
+    if (!existsSync(applied) || !existsSync(this.scriptPath(modelId))) return false;
+    const [now, then] = await Promise.all([readFile(this.scriptPath(modelId), 'utf8'), readFile(applied, 'utf8')]);
+    if (now === then) return false;
+    await writeFile(join(this.dir(modelId), 'unapplied.mjs'), now);
+    await copyFile(applied, this.scriptPath(modelId));
+    await this.restoreParts(modelId, dir);
+    return true;
+  }
+
+  /** Keep a copy of the parts in `dir`, so a change can be undone. */
   async snapshotParts(modelId: string, runDir: string) {
     const to = join(runDir, 'parts-before');
     await mkdir(to, { recursive: true });
@@ -182,7 +218,6 @@ export class Designs {
       const design: PotDesign = {
         description: input.description,
         images,
-        threadId: null,
         params: built.params,
         paramSpec: built.paramSpec,
         report: built.report,
@@ -198,12 +233,15 @@ export class Designs {
           triangleCount: built.report.triangles,
           transform: built.report.placement,
           fit: input.fit,
-          codexThreadId: null,
+          threadId: null,
           design,
         },
         built.stl,
         id,
-      );
+      ).then(async (m) => {
+        await this.markApplied(id);
+        return m;
+      });
     } catch (e) {
       await rm(this.store.modelDir(id), { recursive: true, force: true }).catch(() => undefined);
       throw e;
@@ -246,6 +284,8 @@ export class Designs {
       const mesh = this.store.meshFile(modelId);
       await writeFile(`${mesh}.tmp`, built.stl);
       await rename(`${mesh}.tmp`, mesh);
+      await this.markApplied(modelId);
+      await rm(join(this.dir(modelId), 'unapplied.mjs'), { force: true });
       return this.store.updateModel(modelId, {
         triangleCount: built.report.triangles,
         transform: built.report.placement,
@@ -270,21 +310,12 @@ export class Designs {
     return readFile(this.scriptPath(modelId), 'utf8');
   }
 
-  /** Set up the workspace the design agent runs in. */
+  /** Set up the workspace the design agent runs in: its state.json, which pot-tool reads. */
   async prepareWorkspace(model: PotModel, ref: ReferencePot): Promise<string> {
     const ws = this.dir(model.id);
     await mkdir(join(ws, 'out'), { recursive: true });
     if (!existsSync(this.scriptPath(model.id))) await copyFile(join(dirname(this.toolPath), 'starter-design.mjs'), this.scriptPath(model.id));
-    const tool = join(ws, 'pot-tool');
-    await writeFile(tool, `#!/bin/sh\nexec "${process.execPath}" "${this.toolPath}" "$@"\n`);
-    await chmod(tool, 0o755);
-    const blender = await this.blender.status;
-    await rm(join(ws, 'blender'), { force: true });
-    if (blender.available) {
-      await writeFile(join(ws, 'blender'), blenderWrapper(this.blender.bin, join(dirname(this.toolPath), 'blender')));
-      await chmod(join(ws, 'blender'), 0o755);
-    }
-    await writeFile(join(ws, 'AGENTS.md'), designAgentsMd(join(this.root, 'node_modules', 'manifold-3d', 'manifold.d.ts'), blender.available ? blender.version : null));
+    if (!existsSync(join(this.appliedDir(model.id), SCRIPT_FILE))) await this.markApplied(model.id);
     const state = {
       frame: 'design',
       avoidOverhangs: model.avoidOverhangs !== false,
@@ -300,5 +331,10 @@ export class Designs {
     };
     await writeFile(join(ws, 'state.json'), JSON.stringify(state, null, 2) + '\n');
     return ws;
+  }
+
+  /** The manifold-3d type declarations the design agent can read. */
+  manifoldTypes() {
+    return join(this.root, 'node_modules', 'manifold-3d', 'manifold.d.ts');
   }
 }
