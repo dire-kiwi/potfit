@@ -115,6 +115,7 @@ export class ScreenshotReviews {
           if (!go()) break;
           state.phase = `Reviewing: ${focus}`;
           await this.save(id, state);
+          if (!go()) break;
           const message = `Compare the attached target screenshot (target) against the fresh render of the produced work (produced: front, side, three-quarter, top). Your focus: ${focus}. User instructions (apply alongside the target image): ${JSON.stringify(state.prompt || 'No additional instructions')}. ${overhangPreference(model.avoidOverhangs !== false)} Review independently. Judge visual similarity, allowing for camera, lighting and background differences. A pass means no meaningful visual changes remain. Otherwise answer concerns or fail with specific actionable discrepancies in findings and feedbackForFitter. Do not approve merely because the nursery pot fits. Answer with submit_review.`;
           const { review, done } = await this.reviews.start(id, settings, { focus, message, images: [target, produced] });
           const stop = () => void this.reviews.cancel(id, review.id).catch(() => undefined);
@@ -139,7 +140,9 @@ export class ScreenshotReviews {
         await this.save(id, state);
         if (!go()) break;
         const current = await this.store.getModel(id);
+        if (!go()) break;
         const thread = await this.agent.mainThread(id, settings);
+        if (!go()) break;
         const result = await this.agent.runTurn(
           thread.id,
           `Match the target screenshot. Adjust the produced model using this independent review panel's feedback, then apply it. Preserve functional fit and printability.\nUser instructions: ${JSON.stringify(state.prompt || 'No additional instructions')}.\n${overhangPreference(current.avoidOverhangs !== false)}\n\n${entry.reviews.map((r) => `${r.focus}: ${r.result.summary}\n${r.result.feedbackForFitter}\n${r.result.findings.map((f) => f.detail).join('\n')}`).join('\n\n')}`,

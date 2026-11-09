@@ -6,7 +6,8 @@
 # agent-threads isn't published to npm, so potfit depends on packed tarballs of its protocol, Node
 # and React packages (package.json: file:vendor/...). This clones dire-kiwi/agent-threads at the
 # given commit, builds its packages with pnpm, packs them (pnpm turns their workspace:* dependencies
-# into versions) and records the commit in vendor/AGENT_THREADS. Run `npm install` afterwards.
+# into versions), records the commit in vendor/AGENT_THREADS and copies its fake claude for the
+# tests to test/fixtures/. Run `npm install` afterwards.
 # Needs git, Node 24+ and pnpm.
 set -euo pipefail
 
@@ -27,4 +28,12 @@ for pkg in protocol node react; do
   (cd "$work/agent-threads/ts/packages/$pkg" && pnpm pack --pack-destination "$here/vendor" > /dev/null)
 done
 printf '%s\n' "$commit" > "$here/vendor/AGENT_THREADS"
+# The fake claude the integration tests drive.
+{
+  echo '#!/usr/bin/env node'
+  echo "// Vendored from dire-kiwi/agent-threads $commit (ts/packages/node/src/test/mini-claude.mjs, MIT):"
+  echo "// a scriptable fake \`claude -p\` for potfit's integration tests. Don't edit; re-copy it when re-vendoring."
+  sed '1{/^#!/d}' "$work/agent-threads/ts/packages/node/src/test/mini-claude.mjs"
+} > "$here/test/fixtures/mini-claude.mjs"
+chmod +x "$here/test/fixtures/mini-claude.mjs"
 ls -l "$here/vendor"
