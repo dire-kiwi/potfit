@@ -9,6 +9,8 @@ const apiTarget = ['0.0.0.0', '::'].includes(apiHost) ? '127.0.0.1' : apiHost.in
 
 export default defineConfig({
   plugins: [react()],
+  // The vendored agent-threads React package must use the app's React.
+  resolve: { dedupe: ['react', 'react-dom'] },
   server: {
     port: Number(process.env.POTFIT_WEB_PORT ?? 5173),
     proxy: {
