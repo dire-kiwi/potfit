@@ -3,6 +3,8 @@ import { CodexControls, type CodexControlsProps } from './CodexControls.tsx';
 import { transformsEqual } from '../../shared/transform.ts';
 import type { CodexRun, PotModel, ReviewResult, ServerStatus } from '../../shared/types.ts';
 import { Elapsed, LogView, type LogEntry } from './RunLog.tsx';
+import { CText, Commentable } from './Comments.tsx';
+import type { RunComment } from '../../shared/comments.ts';
 
 interface Props extends CodexControlsProps {
   status: ServerStatus | null;
@@ -20,6 +22,7 @@ interface Props extends CodexControlsProps {
   onLoadLog(run: CodexRun): void;
   /** Put the reviewer's suggestion into the fitting agent's feedback box. */
   onUseFeedback(text: string): void;
+  onComments(run: CodexRun, comments: RunComment[]): void;
 }
 
 const VERDICT: Record<ReviewResult['verdict'], { label: string; cls: string }> = {
@@ -41,7 +44,7 @@ function isStale(run: CodexRun, model: PotModel): boolean {
   );
 }
 
-function ReviewCard({ run, model, onUseFeedback }: { run: CodexRun; model: PotModel; onUseFeedback: Props['onUseFeedback'] }) {
+function ReviewCard({ run, model, onUseFeedback, onComments }: { run: CodexRun; model: PotModel; onUseFeedback: Props['onUseFeedback']; onComments: Props['onComments'] }) {
   if (run.status === 'error') return <p className="error">The review failed: {run.error}</p>;
   if (run.status === 'cancelled') return <p className="hint">Cancelled.</p>;
   const review = run.review;
@@ -49,19 +52,19 @@ function ReviewCard({ run, model, onUseFeedback }: { run: CodexRun; model: PotMo
   const v = VERDICT[review.verdict];
   const m = run.metrics;
   return (
-    <div className="result review-card">
+    <Commentable className="result review-card" comments={run.comments ?? []} onChange={(cs) => onComments(run, cs)}>
       <div className="row spread tight">
         <span className={`verdict ${v.cls}`}>{v.label}</span>
         <span className="muted">{new Date(run.startedAt).toLocaleString()}</span>
       </div>
       {isStale(run, model) && <p className="hint">The fit has changed since this review.</p>}
-      <p>{review.summary}</p>
+      <p><CText field="summary" text={review.summary} /></p>
       {review.findings.length > 0 && (
         <ul className="findings">
           {review.findings.map((f, i) => (
             <li key={i}>
-              <span className={`severity ${f.severity}`}>{f.severity}</span> <strong>{f.title}</strong>
-              {f.detail && <div className="muted">{f.detail}</div>}
+              <span className={`severity ${f.severity}`}>{f.severity}</span> <strong><CText field={`finding.${i}.title`} text={f.title} /></strong>
+              {f.detail && <div className="muted"><CText field={`finding.${i}.detail`} text={f.detail} /></div>}
             </li>
           ))}
         </ul>
@@ -76,13 +79,13 @@ function ReviewCard({ run, model, onUseFeedback }: { run: CodexRun; model: PotMo
       {review.feedbackForFitter && (
         <div className="suggestion">
           <div className="muted">Suggested feedback for the fitter</div>
-          <blockquote>{review.feedbackForFitter}</blockquote>
+          <blockquote><CText field="feedbackForFitter" text={review.feedbackForFitter} /></blockquote>
           <button className="small" onClick={() => onUseFeedback(review.feedbackForFitter)}>
             Use as feedback
           </button>
         </div>
       )}
-    </div>
+    </Commentable>
   );
 }
 
@@ -144,7 +147,7 @@ export function ReviewPanel(props: Props) {
           {props.fitRunning && <p className="hint">Codex is fitting; review once it is done.</p>}
           {latest && (
             <div className="latest">
-              <ReviewCard run={latest} model={model} onUseFeedback={props.onUseFeedback} />
+              <ReviewCard run={latest} model={model} onUseFeedback={props.onUseFeedback} onComments={props.onComments} />
               <details
                 onToggle={(e) => {
                   if ((e.target as HTMLDetailsElement).open && !logs[latest.id]) props.onLoadLog(latest);
@@ -178,7 +181,7 @@ export function ReviewPanel(props: Props) {
                 </button>
                 {openRun === r.id && (
                   <div className="history-detail">
-                    <ReviewCard run={r} model={model} onUseFeedback={props.onUseFeedback} />
+                    <ReviewCard run={r} model={model} onUseFeedback={props.onUseFeedback} onComments={props.onComments} />
                     <LogView entries={logs[r.id] ?? []} live={false} />
                   </div>
                 )}

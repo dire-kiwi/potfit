@@ -11,6 +11,7 @@ import type {
   ReferencePot,
   ServerStatus,
 } from '../shared/types.ts';
+import type { RunComment } from '../shared/comments.ts';
 
 async function request<T>(method: string, url: string, body?: unknown, raw?: BodyInit): Promise<T> {
   const res = await fetch(url, {
@@ -81,6 +82,7 @@ export const api = {
   /** Undo a fit run that edited the mesh. */
   revertRun: (id: string, runId: string) => request<PotModel>('POST', `/api/models/${id}/runs/${runId}/revert`),
   rateRun: (id: string, runId: string, rating: CodexRun['rating']) => request<CodexRun>('PATCH', `/api/models/${id}/runs/${runId}`, { rating }),
+  saveComments: (id: string, runId: string, comments: RunComment[]) => request<CodexRun>('PATCH', `/api/models/${id}/runs/${runId}`, { comments }),
 
   /** Stream a run's events (replayed from the start). Returns a function that stops listening. */
   runEvents(id: string, runId: string, onEvent: (e: CodexEvent) => void, onEnd: () => void): () => void {

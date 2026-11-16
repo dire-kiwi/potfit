@@ -3,6 +3,7 @@ import { REASONING_EFFORTS } from '../shared/types.ts';
 import { parseSTL, writeBinarySTL } from '../shared/stl.ts';
 import { cloneTransform, transformsEqual } from '../shared/transform.ts';
 import type { ScreenshotReview, CodexSettings, CodexEvent, CodexRun, FitMetrics, FitSettings, ParamValues, PotModel, PotTransform, ReferencePot, ServerStatus } from '../shared/types.ts';
+import { feedbackWithComments, type RunComment } from '../shared/comments.ts';
 import { api, type ModelPatchBody } from './api.ts';
 import { OverhangSelector } from './components/OverhangSelector.tsx';
 import { CodexPanel } from './components/CodexPanel.tsx';
@@ -490,16 +491,22 @@ export function App() {
     if (!model || !viewer.current) return;
     const shots = viewer.current.capture();
     if (!await flushSave()) throw new Error('Could not save model edits. Codex was not started.');
+    // Unsent comments on Codex's replies go with feedback.
+    const commented = mode === 'feedback' || mode === 'design-feedback' ? runs.filter((r) => r.comments?.some((c) => !c.sentAt)) : [];
     const run = await api.startRun(model.id, {
       ...codexSettings,
       mode,
-      message,
+      message: feedbackWithComments(message, commented.flatMap((r) => r.comments!.filter((c) => !c.sentAt))),
       images: [
         { name: 'section', dataUrl: shots.section },
         { name: 'view', dataUrl: shots.view },
       ],
       attachments: attachments.map((a) => ({ name: a.name, dataUrl: a.dataUrl })),
     });
+    if (!run.error) {
+      const sentAt = new Date().toISOString();
+      for (const r of commented) saveComments(r, r.comments!.map((c) => (c.sentAt ? c : { ...c, sentAt })));
+    }
     if (run.status === 'running') {
       if (modelRef.current?.id === model.id) setActiveRun(run);
       subscribe(model.id, run);
@@ -552,10 +559,19 @@ export function App() {
     }
   };
 
+  // Saved in order, so a quick edit after an add can't be overtaken by it.
+  const commentSaves = useRef(Promise.resolve());
+  const saveComments = (run: CodexRun, comments: RunComment[]) => {
+    setRuns((rs) => rs.map((r) => (r.id === run.id ? { ...r, comments } : r)));
+    commentSaves.current = commentSaves.current.then(() => api.saveComments(run.modelId, run.id, comments)).then(() => undefined, fail);
+  };
+  const pendingComments = runs.reduce((n, r) => n + (r.comments ?? []).filter((c) => !c.sentAt).length, 0);
+
   const rateRun = async (run: CodexRun, rating: CodexRun['rating']) => {
     try {
       const saved = await api.rateRun(run.modelId, run.id, rating);
-      setRuns((rs) => rs.map((r) => (r.id === saved.id ? saved : r)));
+      // Keep local comments: a comment save may still be on its way.
+      setRuns((rs) => rs.map((r) => (r.id === saved.id ? { ...saved, comments: r.comments } : r)));
     } catch (e) {
       fail(e);
     }
@@ -608,6 +624,8 @@ export function App() {
       onCancel={() => api.cancelRun(model.id).catch(fail)}
       onRate={rateRun}
       onRevert={revertRun}
+      onComments={saveComments}
+      pendingComments={pendingComments}
       onLoadLog={loadLog}
       onNewSession={async () => {
         try {
@@ -734,7 +752,7 @@ export function App() {
         {model ? (
           <>
             {model.design && (
-              <DesignPanel key={model.id} model={model} references={references} lockedBy={activeRun?.kind ?? (loopRunning || startingReview ? 'feedback' : null)} building={building} onBuild={buildDesign} />
+              <DesignPanel key={`design-${model.id}`} model={model} references={references} lockedBy={activeRun?.kind ?? (loopRunning || startingReview ? 'feedback' : null)} building={building} onBuild={buildDesign} />
             )}
             {model.design && codexPanel}
             <FitPanel
@@ -765,7 +783,7 @@ export function App() {
                 }} />
             </section>
             {!model.design && codexPanel}
-            <ScreenshotReviewPanel key={model.id} modelId={model.id}
+            <ScreenshotReviewPanel key={`shots-${model.id}`} modelId={model.id}
               onStart={async (images, prompt) => {
                 setStartingReview(true);
                 try {
@@ -789,6 +807,7 @@ export function App() {
               onStart={() => startCodex('review', '')}
               onCancel={() => api.cancelRun(model.id).catch(fail)}
               onLoadLog={loadLog}
+              onComments={saveComments}
               onUseFeedback={(text) => {
                 // Feedback continues the fitting (or design) conversation;
                 // without one, it becomes the instructions for a new session.

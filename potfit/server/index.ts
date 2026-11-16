@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseComments } from '../shared/comments.ts';
 import { analyzeMesh, initialTransform } from '../shared/fit.ts';
 import { parseSTL, writeBinarySTL } from '../shared/stl.ts';
 import { applyTransform, computeBounds, validateTransform, yUpToZUp } from '../shared/transform.ts';
@@ -320,9 +321,20 @@ app.post('/api/models/:id/runs/:runId/revert', route(async (req, res) => {
 
 app.patch('/api/models/:id/runs/:runId', route(async (req, res) => {
   const run = await store.getRun(param(req, 'id'), param(req, 'runId'));
-  const rating = (req.body ?? {}).rating;
-  if (rating !== null && rating !== 'accepted' && rating !== 'rejected') throw new BadRequest('rating must be accepted, rejected or null');
-  const next = { ...run, rating };
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const next = { ...run };
+  if ('rating' in b) {
+    if (b.rating !== null && b.rating !== 'accepted' && b.rating !== 'rejected') throw new BadRequest('rating must be accepted, rejected or null');
+    next.rating = b.rating;
+  }
+  if ('comments' in b) {
+    if (run.status === 'running') throw new Conflict('Comment on a run once it has finished');
+    try {
+      next.comments = parseComments(b.comments);
+    } catch (e) {
+      throw new BadRequest((e as Error).message);
+    }
+  }
   await store.saveRun(next);
   res.json(next);
 }));

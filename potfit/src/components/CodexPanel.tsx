@@ -4,6 +4,8 @@ import { CodexControls, type CodexControlsProps } from './CodexControls.tsx';
 import type { CodexRun, FitGoals, PotModel, ServerStatus } from '../../shared/types.ts';
 import { ImagePicker, type PickedImage } from './ImagePicker.tsx';
 import { Elapsed, LogView, type LogEntry } from './RunLog.tsx';
+import { CText, Commentable } from './Comments.tsx';
+import type { RunComment } from '../../shared/comments.ts';
 
 interface Props extends CodexControlsProps {
   status: ServerStatus | null;
@@ -25,6 +27,9 @@ interface Props extends CodexControlsProps {
   onCancel(): void;
   onRate(run: CodexRun, rating: CodexRun['rating']): void;
   onRevert(run: CodexRun): void;
+  onComments(run: CodexRun, comments: RunComment[]): void;
+  /** Comments on any run of this model not yet sent to Codex; they go with the next feedback. */
+  pendingComments: number;
   onLoadLog(run: CodexRun): void;
   onNewSession(): void;
 }
@@ -84,17 +89,19 @@ function RateRow({ run, onRate, onRevert, good, revertTitle }: { run: CodexRun; 
   );
 }
 
-function DesignResultCard({ run, onRate, onRevert }: { run: CodexRun; onRate: Props['onRate']; onRevert: Props['onRevert'] }) {
+type CardProps = { run: CodexRun; onRate: Props['onRate']; onRevert: Props['onRevert']; onComments: Props['onComments'] };
+
+function DesignResultCard({ run, onRate, onRevert, onComments }: CardProps) {
   const d = run.design;
   if (run.status === 'cancelled') return <p className="hint">Cancelled.</p>;
   if (run.status === 'error' && !d) return <p className="error">Codex failed: {run.error}</p>;
   if (!d) return null;
   const r = run.designReport;
   return (
-    <div className="result">
+    <Commentable className="result" comments={run.comments ?? []} onChange={(cs) => onComments(run, cs)}>
       {run.status === 'error' && <p className="error">{run.error} The previous design is still in place.</p>}
-      {d.title && <p><strong>{d.title}</strong></p>}
-      <p>{d.summary}</p>
+      {d.title && <p><strong><CText field="title" text={d.title} /></strong></p>}
+      <p><CText field="summary" text={d.summary} /></p>
       <p className="muted">
         Confidence {d.confidence}
         {r && ` · ${r.size.x.toFixed(0)} × ${r.size.y.toFixed(0)} × ${r.size.z.toFixed(0)} mm · ${r.volume.toFixed(0)} cm³`}
@@ -102,18 +109,18 @@ function DesignResultCard({ run, onRate, onRevert }: { run: CodexRun; onRate: Pr
       </p>
       {d.warnings.length > 0 && (
         <ul className="warnings">
-          {d.warnings.map((w) => (
-            <li key={w}>{w}</li>
+          {d.warnings.map((w, i) => (
+            <li key={w}><CText field={`warning.${i}`} text={w} /></li>
           ))}
         </ul>
       )}
       {run.status === 'done' && <RateRow run={run} onRate={onRate} onRevert={onRevert} good="Good design" revertTitle="Go back to the design from before this run" />}
-    </div>
+    </Commentable>
   );
 }
 
-function ResultCard({ run, onRate, onRevert }: { run: CodexRun; onRate: Props['onRate']; onRevert: Props['onRevert'] }) {
-  if (run.kind === 'design' || run.kind === 'design-feedback') return <DesignResultCard run={run} onRate={onRate} onRevert={onRevert} />;
+function ResultCard({ run, onRate, onRevert, onComments }: CardProps) {
+  if (run.kind === 'design' || run.kind === 'design-feedback') return <DesignResultCard run={run} onRate={onRate} onRevert={onRevert} onComments={onComments} />;
   if (run.status === 'error') return <p className="error">Codex failed: {run.error}</p>;
   if (run.status === 'cancelled') return <p className="hint">Cancelled.</p>;
   if (!run.result) return null;
@@ -121,8 +128,8 @@ function ResultCard({ run, onRate, onRevert }: { run: CodexRun; onRate: Props['o
   const s = run.result.transform.scale;
   const changes = goalChanges(run);
   return (
-    <div className="result">
-      <p>{run.result.summary}</p>
+    <Commentable className="result" comments={run.comments ?? []} onChange={(cs) => onComments(run, cs)}>
+      <p><CText field="summary" text={run.result.summary} /></p>
       <p className="muted">
         Confidence {run.result.confidence} · scale {s.x === s.y && s.y === s.z ? s.x.toFixed(4) : `${s.x.toFixed(4)} / ${s.y.toFixed(4)} / ${s.z.toFixed(4)}`}
         {m && typeof m.minRadialGap === 'number' && ` · narrowest gap ${m.minRadialGap.toFixed(2)} mm`}
@@ -136,8 +143,8 @@ function ResultCard({ run, onRate, onRevert }: { run: CodexRun; onRate: Props['o
       )}
       {run.result.warnings.length > 0 && (
         <ul className="warnings">
-          {run.result.warnings.map((w) => (
-            <li key={w}>{w}</li>
+          {run.result.warnings.map((w, i) => (
+            <li key={w}><CText field={`warning.${i}`} text={w} /></li>
           ))}
         </ul>
       )}
@@ -148,7 +155,7 @@ function ResultCard({ run, onRate, onRevert }: { run: CodexRun; onRate: Props['o
         good="Good fit"
         revertTitle={run.meshEdit ? 'Put the mesh, the pot and the fit settings back to how they were before this run' : 'Put the pot and fit settings back to how they were before this run'}
       />
-    </div>
+    </Commentable>
   );
 }
 
@@ -172,6 +179,7 @@ export function CodexPanel(props: Props) {
   const latest = runs.at(-1) ?? null;
   const canFeedback = !!thread && !activeRun;
   const blocked = sending || !available || props.reviewRunning;
+  const canSendFeedback = (!!feedback.trim() || props.pendingComments > 0) && !blocked;
   const history = runs.slice(0, -1).reverse();
   const quick = designing ? QUICK_DESIGN_FEEDBACK : QUICK_FEEDBACK;
 
@@ -233,7 +241,7 @@ export function CodexPanel(props: Props) {
                 <span className="muted">{new Date(latest.startedAt).toLocaleString()}</span>
               </h3>
               {latest.message && <blockquote>{latest.message}</blockquote>}
-              <ResultCard run={latest} onRate={props.onRate} onRevert={props.onRevert} />
+              <ResultCard run={latest} onRate={props.onRate} onRevert={props.onRevert} onComments={props.onComments} />
               <details
                 open={latestLogOpen}
                 onToggle={(e) => {
@@ -268,12 +276,17 @@ export function CodexPanel(props: Props) {
                 }
                 onChange={(e) => setFeedback(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && feedback.trim() && !blocked) start(feedbackMode, feedback, feedbackImages);
+                  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && canSendFeedback) start(feedbackMode, feedback, feedbackImages);
                 }}
               />
               <ImagePicker images={feedbackImages} onChange={setFeedbackImages} compact disabled={blocked} />
+              {props.pendingComments > 0 && (
+                <p className="hint">
+                  Your {props.pendingComments === 1 ? 'comment' : `${props.pendingComments} comments`} on Codex's replies will go with this feedback.
+                </p>
+              )}
               <div className="row">
-                <button className="primary" disabled={!feedback.trim() || blocked} onClick={() => start(feedbackMode, feedback, feedbackImages)}>
+                <button className="primary" disabled={!canSendFeedback} onClick={() => start(feedbackMode, feedback, feedbackImages)}>
                   Send feedback
                 </button>
               </div>
@@ -334,7 +347,7 @@ export function CodexPanel(props: Props) {
                 </button>
                 {openRun === r.id && (
                   <div className="history-detail">
-                    <ResultCard run={r} onRate={props.onRate} onRevert={props.onRevert} />
+                    <ResultCard run={r} onRate={props.onRate} onRevert={props.onRevert} onComments={props.onComments} />
                     <LogView entries={logs[r.id] ?? []} live={false} />
                   </div>
                 )}

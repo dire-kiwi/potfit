@@ -89,6 +89,12 @@ Codex run any command in the container.
    puts that suggestion in the feedback box for you to edit and send. If you
    change the fit afterwards, the review is marked out of date. You can keep
    moving the pot while a review runs; fitting waits until it finishes.
+   **Comments**: select text in a fit, design or review result and click
+   *Comment*. The comment box opens in the same popup. Clicking away saves
+   it and Escape discards it. Saved comments show as highlights, with bubbles
+   beside the text. Click a bubble to edit or delete it. Your next feedback
+   sends Codex any comments it hasn't had, each under the text it's about, and
+   you can send feedback with comments alone.
 7. **Manual adjustment**: drag the gizmo in either view (W move, E scale,
    Q view only, F frame), type exact numbers under Placement, or use *Centre
    on cavity* and *Seat on floor*. The scale lock keeps scaling uniform, round
