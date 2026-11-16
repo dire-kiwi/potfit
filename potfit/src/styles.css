@@ -558,6 +558,106 @@ blockquote {
   margin: 0 0 6px;
 }
 
+/* comments on result text (Comments.tsx) */
+
+.commentable {
+  position: relative;
+}
+
+.commentable.has-comments {
+  padding-right: 128px;
+}
+
+mark.cmark {
+  background: rgba(241, 194, 125, 0.22);
+  color: inherit;
+  border-bottom: 1px solid rgba(241, 194, 125, 0.6);
+  cursor: pointer;
+}
+
+mark.cmark.active,
+mark.cmark.draft {
+  background: rgba(241, 194, 125, 0.45);
+}
+
+.comment-rail {
+  position: absolute;
+  top: 0;
+  right: 6px;
+  width: 114px;
+}
+
+.comment-bubble {
+  position: absolute;
+  left: 0;
+  right: 0;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 5px 7px;
+  font-size: 12px;
+  line-height: 1.35;
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  transition: top 0.12s;
+}
+
+.comment-bubble:hover {
+  border-color: var(--accent-2);
+}
+
+.comment-bubble.sent {
+  opacity: 0.7;
+}
+
+.comment-bubble.open {
+  z-index: 2;
+  cursor: default;
+  border-color: var(--accent-2);
+  /* Wider than the margin while editing, growing into the text. */
+  left: -110px;
+}
+
+.comment-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.comment-popup {
+  position: absolute;
+  z-index: 3;
+  max-width: 100%;
+  background: var(--panel);
+  border: 1px solid var(--accent-2);
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+}
+
+.comment-popup:has(.comment-editor) {
+  width: 240px;
+  padding: 6px;
+}
+
+.comment-editor textarea {
+  width: 100%;
+  resize: vertical;
+  font-size: 12px;
+}
+
+.comment-editor .row {
+  margin-top: 4px;
+  font-size: 11px;
+}
+
+button.danger-text {
+  color: #fca5a5;
+}
+
 .log {
   max-height: 360px;
   overflow-y: auto;

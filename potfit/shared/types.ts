@@ -4,6 +4,8 @@
 // fit: +Y is up, the reference (inner nursery) pot stands with the centre of its
 // base at the origin, and its axis runs up the Y axis.
 
+import type { RunComment } from './comments.ts';
+
 export type UpAxis = '+X' | '-X' | '+Y' | '-Y' | '+Z' | '-Z';
 export const UP_AXES: readonly UpAxis[] = ['+Z', '-Z', '+Y', '-Y', '+X', '-X'];
 
@@ -324,6 +326,8 @@ export interface CodexRun {
   error: string | null;
   /** User verdict on the result. */
   rating: 'accepted' | 'rejected' | null;
+  /** The user's comments on the result's text (absent on older runs). */
+  comments?: RunComment[];
 }
 
 /** Normalised item from `codex exec --json`, as shown in the run log. */
