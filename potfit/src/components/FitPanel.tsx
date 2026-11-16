@@ -2,31 +2,10 @@ import { UP_AXES, type FitMetrics, type FitSettings, type PotModel, type PotTran
 import type { ScaleLock } from '../viewer/PotViewer.ts';
 import { NumberField } from './NumberField.tsx';
 
-interface Props {
-  model: PotModel;
-  references: ReferencePot[];
-  metrics: FitMetrics | null;
-  metricsError: string | null;
-  locked: boolean;
-  busy: string | null;
-  scaleLock: ScaleLock;
-  canUndo: boolean;
-  canRedo: boolean;
-  onScaleLock(lock: ScaleLock): void;
-  onFit(patch: Partial<FitSettings>): void;
-  onTransform(t: PotTransform): void;
-  onQuickFit(): void;
-  onDetectOrientation(): void;
-  onUndo(): void;
-  onRedo(): void;
-  exportUrl: string;
-}
-
-const mm = (v: number | null | undefined, digits = 2) =>
+export const mm = (v: number | null | undefined, digits = 2) =>
   v === null || v === undefined || Number.isNaN(v) ? '–' : Number.isFinite(v) ? `${v.toFixed(digits)} mm` : '∞';
-
 /** Thin walls or floors may not print; 1.2 mm is a common FDM minimum. */
-function thicknessClass(m: FitMetrics): string {
+export function thicknessClass(m: FitMetrics): string {
   const thinnest = Math.min(m.wallThickness?.min ?? Infinity, m.floorThickness ?? Infinity);
   return thinnest < 0.8 ? 'bad' : thinnest < 1.2 ? 'warn' : '';
 }
@@ -40,34 +19,13 @@ function scaleWithLock(prev: Vec3, axis: keyof Vec3, value: number, lock: ScaleL
   return { ...prev, [axis]: value };
 }
 
-export function FitPanel(props: Props) {
-  const { model, references, metrics, locked, scaleLock } = props;
-  const t = model.transform;
+
+/** The fit goals: clearance, scaling, rim offset and floor gap. */
+export function FitGoals({ model, onFit, locked }: { model: PotModel; onFit(patch: Partial<FitSettings>): void; locked: boolean }) {
   const fit = model.fit;
-  const ref = references.find((r) => r.id === fit.referenceId) ?? null;
-  const setPos = (axis: keyof Vec3, v: number) => props.onTransform({ ...t, position: { ...t.position, [axis]: v } });
-  const setScale = (axis: keyof Vec3, v: number) => v > 0 && props.onTransform({ ...t, scale: scaleWithLock(t.scale, axis, v, scaleLock) });
-
-  const gapClass = !metrics ? '' : metrics.interferes ? 'bad' : metrics.minRadialGap < metrics.requiredRadialGap - 0.05 ? 'warn' : 'ok';
-  const near = (a: number | null, b: number | null) => a !== null && b !== null && Math.abs(a - b) <= 0.5;
-
+  const props = { onFit };
   return (
-    <>
-      <section className="panel">
-        <header>
-          <h2>Fit</h2>
-        </header>
-        <label className="field">
-          <span>Reference pot</span>
-          <select value={fit.referenceId ?? ''} onChange={(e) => props.onFit({ referenceId: e.target.value || null })}>
-            <option value="">Choose…</option>
-            {references.map((r) => (
-              <option key={r.id} value={r.id}>
-                {r.name} (⌀{r.topOD}/⌀{r.bottomOD} × {r.height})
-              </option>
-            ))}
-          </select>
-        </label>
+    <fieldset className="plain" disabled={locked}>
         <label className="field">
           <span title="Diametral: the radial gap is half of this">Clearance (⌀)</span>
           <NumberField value={fit.clearance} min={0} step={0.5} digits={2} onChange={(v) => props.onFit({ clearance: v })} />
@@ -98,29 +56,36 @@ export function FitPanel(props: Props) {
           <em>mm</em>
         </label>
         <p className="hint">Leave "rim proud by" empty to sit the pot on the floor at the smallest scale that clears the walls.</p>
-        <div className="row">
-          <button onClick={props.onQuickFit} disabled={locked || !ref || !!props.busy} title="Run the built-in solver with these settings">
-            Quick fit (no AI)
-          </button>
-          <a className={`button ${locked ? 'disabled' : ''}`} href={props.exportUrl} download>
-            Export STL
-          </a>
-        </div>
-      </section>
+    </fieldset>
+  );
+}
 
-      <section className="panel">
-        <header>
-          <h2>Placement</h2>
-          <div className="row tight">
-            <button className="small" disabled={!props.canUndo || locked} onClick={props.onUndo} title="Undo (Ctrl+Z)">
-              ↶
-            </button>
-            <button className="small" disabled={!props.canRedo || locked} onClick={props.onRedo} title="Redo (Ctrl+Shift+Z)">
-              ↷
-            </button>
-          </div>
-        </header>
-        {locked && <p className="hint">Codex is working; manual edits are paused.</p>}
+/** The placement: up axis, spin, position and scale, by number. */
+export function Placement(props: {
+  model: PotModel;
+  metrics: FitMetrics | null;
+  locked: boolean;
+  scaleLock: ScaleLock;
+  canUndo: boolean;
+  canRedo: boolean;
+  onScaleLock(lock: ScaleLock): void;
+  onTransform(t: PotTransform): void;
+  onDetectOrientation(): void;
+  onUndo(): void;
+  onRedo(): void;
+}) {
+  const { model, metrics, locked, scaleLock } = props;
+  const t = model.transform;
+  const fit = model.fit;
+  const setPos = (axis: keyof Vec3, v: number) => props.onTransform({ ...t, position: { ...t.position, [axis]: v } });
+  const setScale = (axis: keyof Vec3, v: number) => v > 0 && props.onTransform({ ...t, scale: scaleWithLock(t.scale, axis, v, scaleLock) });
+  return (
+    <>
+      <div className="row tight end">
+        <button className="small" disabled={!props.canUndo || locked} onClick={props.onUndo} title="Undo (Ctrl+Z)">↶ Undo</button>
+        <button className="small" disabled={!props.canRedo || locked} onClick={props.onRedo} title="Redo (Ctrl+Shift+Z)">↷ Redo</button>
+      </div>
+        {locked && <p className="hint">The agent is working; manual edits are paused.</p>}
         <div className="grid3">
           <span className="label">Up axis</span>
           <select disabled={locked} value={t.up} onChange={(e) => props.onTransform({ ...t, up: e.target.value as UpAxis })}>
@@ -179,13 +144,20 @@ export function FitPanel(props: Props) {
             Seat on floor
           </button>
         </div>
-      </section>
+    </>
+  );
+}
 
-      <section className="panel">
-        <header>
-          <h2>Measurements</h2>
-        </header>
-        {!ref && <p className="hint">Choose a reference pot to measure the fit.</p>}
+/** Measurements of the fit, in full. */
+export function Measurements({ model, references, metrics, metricsError }: { model: PotModel; references: ReferencePot[]; metrics: FitMetrics | null; metricsError: string | null }) {
+  const fit = model.fit;
+  const ref = references.find((r) => r.id === fit.referenceId) ?? null;
+  const gapClass = !metrics ? '' : metrics.interferes ? 'bad' : metrics.minRadialGap < metrics.requiredRadialGap - 0.05 ? 'warn' : 'ok';
+  const near = (a: number | null, b: number | null) => a !== null && b !== null && Math.abs(a - b) <= 0.5;
+  const props = { metricsError };
+  return (
+    <>
+        {!ref && <p className="hint">Choose a nursery pot to measure the fit.</p>}
         {props.metricsError && <p className="error">{props.metricsError}</p>}
         {ref && metrics && (
           <>
@@ -228,7 +200,6 @@ export function FitPanel(props: Props) {
             )}
           </>
         )}
-      </section>
     </>
   );
 }

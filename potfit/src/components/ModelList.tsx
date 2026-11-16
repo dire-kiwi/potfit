@@ -83,7 +83,7 @@ export function ModelList({ models, selectedId, busy, onSelect, onFiles, onNewDe
               className="icon"
               title="Delete"
               onClick={() => {
-                if (confirm(`Delete model "${m.name}" and its Codex history?`)) onDelete(m.id);
+                if (confirm(`Delete model "${m.name}" and its conversations?`)) onDelete(m.id);
               }}
             >
               ×

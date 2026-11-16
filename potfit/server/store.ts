@@ -1,19 +1,21 @@
-// File-backed storage for reference pots, models and Codex runs.
+// File-backed storage for reference pots, models, the agent's checkpoints and reviews.
+// Threads themselves are in agent-threads' store (data/threads.db).
 //
 // data/
 //   references.json
-//   models/<id>/model.json      PotModel
-//   models/<id>/mesh.stl        normalised binary STL (raw model coordinates)
-//   models/<id>/runs/<runId>/   run.json, events.jsonl, images, Codex output
-//   models/<id>/codex/          working directory Codex fits in (state.json, AGENTS.md, ...)
-//   models/<id>/design/         designed pots: design.mjs, refs/ (the user's images), and
-//                               the design agent's working files
+//   models/<id>/model.json             PotModel
+//   models/<id>/mesh.stl               normalised binary STL (raw model coordinates)
+//   models/<id>/agent/                 working directory the fitting agent runs in
+//   models/<id>/design/                designed pots: design.mjs, refs/ (the user's images), parts/,
+//                                      and the design agent's working files
+//   models/<id>/checkpoints/<id>/      checkpoint.json and what a change replaced (mesh, script, parts)
+//   models/<id>/reviews/<id>/          review.json and the reviewer's workspace
 
 import { randomUUID } from 'node:crypto';
-import { appendFile, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import type { CodexEvent, CodexRun, ModelPatch, PotDesign, PotModel, ReferenceInput, ReferencePot } from '../shared/types.ts';
+import type { Checkpoint, ModelPatch, Review, PotDesign, PotModel, ReferenceInput, ReferencePot } from '../shared/types.ts';
 
 async function writeJson(file: string, value: unknown) {
   const tmp = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
@@ -131,7 +133,7 @@ export class Store {
   }
 
   /** `patch.design` is merged into a designed model's design; it is ignored for imported models. */
-  updateModel(id: string, patch: ModelPatch & Partial<Pick<PotModel, 'codexThreadId' | 'triangleCount'>> & { design?: Partial<PotDesign> }): Promise<PotModel> {
+  updateModel(id: string, patch: ModelPatch & Partial<Pick<PotModel, 'threadId' | 'triangleCount'>> & { design?: Partial<PotDesign> }): Promise<PotModel> {
     const file = join(this.modelDir(id), 'model.json');
     return this.serial(file, async () => {
       const m = await this.getModel(id);
@@ -154,42 +156,55 @@ export class Store {
     await rm(dir, { recursive: true, force: true });
   }
 
-  // ------------------------------------------------------------------ runs
+  // ----------------------------------------------------------- checkpoints
 
-  runDir(modelId: string, runId: string) {
-    if (!/^[0-9a-f-]{36}$/.test(runId)) throw new NotFound(`run ${runId} not found`);
-    return join(this.modelDir(modelId), 'runs', runId);
+  checkpointDir(modelId: string, id: string) {
+    if (!/^[\w-]{1,80}$/.test(id)) throw new NotFound(`checkpoint ${id} not found`);
+    return join(this.modelDir(modelId), 'checkpoints', id);
   }
 
-  async listRuns(modelId: string): Promise<CodexRun[]> {
-    const ids = await readdir(join(this.modelDir(modelId), 'runs')).catch(() => [] as string[]);
-    const runs = await Promise.all(ids.map((id) => this.getRun(modelId, id).catch(() => null)));
-    return runs.filter((r): r is CodexRun => r !== null).sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+  async listCheckpoints(modelId: string): Promise<Checkpoint[]> {
+    const ids = await readdir(join(this.modelDir(modelId), 'checkpoints')).catch(() => [] as string[]);
+    const all = await Promise.all(ids.map((id) => this.getCheckpoint(modelId, id).catch(() => null)));
+    return all.filter((c): c is Checkpoint => c !== null).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }
 
-  async getRun(modelId: string, runId: string): Promise<CodexRun> {
-    const r = await readJson<CodexRun | null>(join(this.runDir(modelId, runId), 'run.json'), null);
-    if (!r) throw new NotFound(`run ${runId} not found`);
+  async getCheckpoint(modelId: string, id: string): Promise<Checkpoint> {
+    const c = await readJson<Checkpoint | null>(join(this.checkpointDir(modelId, id), 'checkpoint.json'), null);
+    if (!c) throw new NotFound(`checkpoint ${id} not found`);
+    return c;
+  }
+
+  async saveCheckpoint(c: Checkpoint): Promise<void> {
+    const dir = this.checkpointDir(c.modelId, c.id);
+    await mkdir(dir, { recursive: true });
+    const file = join(dir, 'checkpoint.json');
+    await this.serial(file, () => writeJson(file, c));
+  }
+
+  // --------------------------------------------------------------- reviews
+
+  reviewDir(modelId: string, id: string) {
+    if (!/^[0-9a-f-]{36}$/.test(id)) throw new NotFound(`review ${id} not found`);
+    return join(this.modelDir(modelId), 'reviews', id);
+  }
+
+  async listReviews(modelId: string): Promise<Review[]> {
+    const ids = await readdir(join(this.modelDir(modelId), 'reviews')).catch(() => [] as string[]);
+    const all = await Promise.all(ids.map((id) => this.getReview(modelId, id).catch(() => null)));
+    return all.filter((r): r is Review => r !== null).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  async getReview(modelId: string, id: string): Promise<Review> {
+    const r = await readJson<Review | null>(join(this.reviewDir(modelId, id), 'review.json'), null);
+    if (!r) throw new NotFound(`review ${id} not found`);
     return r;
   }
 
-  async saveRun(run: CodexRun): Promise<void> {
-    const dir = this.runDir(run.modelId, run.id);
+  async saveReview(r: Review): Promise<void> {
+    const dir = this.reviewDir(r.modelId, r.id);
     await mkdir(dir, { recursive: true });
-    const file = join(dir, 'run.json');
-    await this.serial(file, () => writeJson(file, run));
-  }
-
-  async appendEvent(modelId: string, runId: string, event: CodexEvent): Promise<void> {
-    const file = join(this.runDir(modelId, runId), 'events.jsonl');
-    await this.serial(file, () => appendFile(file, JSON.stringify(event) + '\n'));
-  }
-
-  async readEvents(modelId: string, runId: string): Promise<CodexEvent[]> {
-    const text = await readFile(join(this.runDir(modelId, runId), 'events.jsonl'), 'utf8').catch(() => '');
-    return text
-      .split('\n')
-      .filter(Boolean)
-      .map((line) => JSON.parse(line) as CodexEvent);
+    const file = join(dir, 'review.json');
+    await this.serial(file, () => writeJson(file, r));
   }
 }

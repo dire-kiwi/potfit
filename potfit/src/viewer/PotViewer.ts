@@ -22,6 +22,7 @@ export interface ViewerCallbacks {
 
 const COLORS = {
   background: 0x1b1f24,
+  lightBackground: 0xdcdfe4,
   sectionBackground: 0x14171b,
   pot: 0xc4724e,
   cut: 0xf1c27d,
@@ -216,6 +217,12 @@ export class PotViewer {
   }
 
   // ------------------------------------------------------------ public API
+
+  /** The 3D view's backdrop for the app's light or dark theme (the section view stays dark, for its pale cut faces). */
+  setTheme(theme: 'light' | 'dark') {
+    this.main.scene.background = new THREE.Color(theme === 'light' ? COLORS.lightBackground : COLORS.background);
+    this.invalidate();
+  }
 
   invalidate() {
     this.needsRender = true;

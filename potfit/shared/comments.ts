@@ -1,7 +1,8 @@
 /**
- * Comments the user leaves on text in a Codex run's result (its summary, a
- * review finding, ...). They are anchored to a text block of the result card
- * by `field` and character offsets, and go to Codex with the next feedback.
+ * Comments the user leaves on text in a result card: a change the agent
+ * applied (a checkpoint) or a review's verdict (its summary, a finding, ...).
+ * They are anchored to a text block of the card by `field` and character
+ * offsets, and go to the model's thread with the next message.
  */
 export interface RunComment {
   id: string;
@@ -14,7 +15,7 @@ export interface RunComment {
   quote: string;
   text: string;
   createdAt: string;
-  /** When it went to Codex with feedback; null until then. */
+  /** When it went to the agent with a message; null until then. */
   sentAt: string | null;
 }
 
@@ -23,7 +24,7 @@ export const MAX_COMMENTS = 200;
 /** Validate comments sent by the client. Throws an Error naming the problem. */
 export function parseComments(value: unknown): RunComment[] {
   if (!Array.isArray(value)) throw new Error('comments must be an array');
-  if (value.length > MAX_COMMENTS) throw new Error(`at most ${MAX_COMMENTS} comments per run`);
+  if (value.length > MAX_COMMENTS) throw new Error(`at most ${MAX_COMMENTS} comments per result`);
   return value.map((c, i) => {
     const o = (c ?? {}) as Record<string, unknown>;
     const str = (k: string, max: number) => {
@@ -52,7 +53,7 @@ export function parseComments(value: unknown): RunComment[] {
   });
 }
 
-/** Unsent comments written into feedback for Codex: the quoted text, then the comment. */
+/** Unsent comments written into a message for the agent: the quoted text, then the comment. */
 export function commentsAsFeedback(comments: RunComment[]): string {
   return comments.map((c) => `> ${c.quote.replace(/\s+/g, ' ').trim()}\n${c.text.trim()}`).join('\n\n');
 }

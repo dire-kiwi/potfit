@@ -167,7 +167,7 @@ function Bubble({ comment, open, top, onOpen, onClose, onChange, onDelete, measu
       ) : (
         <>
           <div className="comment-text">{comment.text}</div>
-          {comment.sentAt && <div className="muted">Sent to Codex</div>}
+          {comment.sentAt && <div className="muted">Sent to Claude</div>}
         </>
       )}
     </div>

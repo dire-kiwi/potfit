@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// pot-tool: measuring and fitting helpers for the Codex fit agent (and humans).
+// pot-tool: measuring and fitting helpers, behind potfit's app tools (and for humans).
 // Run `node tools/pot-tool.ts help` for usage.
 
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
@@ -54,6 +54,7 @@ Options
   --params <json>        build: parameter values to try, over state.params
   --view <az,el>         preview: one large view from this azimuth and elevation (degrees)
   --json                 print JSON instead of text
+  --json-out <file>      also write the JSON to <file> (potfit's app tools use this)
 `;
 
 interface State {
@@ -94,6 +95,7 @@ const { positionals, values } = parseArgs({
     in: { type: 'string' },
     'z-up': { type: 'boolean', default: false },
     json: { type: 'boolean', default: false },
+    'json-out': { type: 'string' },
     help: { type: 'boolean', short: 'h', default: false },
   },
 });
@@ -199,6 +201,7 @@ function formatMetrics(m: FitMetrics, fit: FitSettings): string {
 }
 
 function out(json: unknown, text: string) {
+  if (values['json-out']) writeFileSync(resolve(values['json-out']), JSON.stringify(json));
   process.stdout.write(values.json ? JSON.stringify(json, null, 2) + '\n' : text + '\n');
 }
 
@@ -396,7 +399,8 @@ switch (command) {
         ? `one view from azimuth ${views[0].azimuth}°, elevation ${views[0].elevation}° (azimuth 0 looks at the front from -y, -90 at the right side from +x)`
         : 'top left: front (from -y); top right: right side (from +x); bottom left: three-quarter from front right, above; bottom right: top down, front at the bottom.',
     ];
-    if (!views && state.reference) {
+    // The section is for design workspaces, whose mesh is the last build (not one passed with --mesh).
+    if (!views && state.reference && state.frame === 'design' && !values.mesh) {
       const fit = fitSettings();
       const t = transformArg();
       const sectionFile = join(dirname(file), 'section.png');

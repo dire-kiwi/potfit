@@ -1,66 +1,78 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import type { ScreenshotReview } from '../../shared/types.ts';
-import { api } from '../api.ts';
 import { ImagePicker, type PickedImage } from './ImagePicker.tsx';
 
-export function ScreenshotReviewPanel({ modelId, onStart, disabled, onUpdate }: {
-  modelId: string; disabled: boolean;
-  onStart(images: PickedImage[], prompt: string): Promise<ScreenshotReview>;
-  onUpdate(state: ScreenshotReview | null): void;
+/** The iterative screenshot review: a target picture, instructions, and the rounds so far. */
+export function ScreenshotReviewPanel({ state, onStart, onCancel, onOpenReview, disabled }: {
+  state: ScreenshotReview | null;
+  disabled: boolean;
+  onStart(images: PickedImage[], prompt: string): Promise<void>;
+  onCancel(): Promise<void>;
+  /** Open a reviewer's conversation in the dock. */
+  onOpenReview(reviewId: string): void;
 }) {
   const [prompt, setPrompt] = useState('');
   const [images, setImages] = useState<PickedImage[]>([]);
-  const [state, setState] = useState<ScreenshotReview | null>(null);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
-  useEffect(() => {
-    let stopped = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const refresh = async () => {
-      try {
-        const next = await api.screenshotReview(modelId);
-        if (!stopped) { setState(next); onUpdate(next); setError(''); }
-      } catch (e) { if (!stopped) setError((e as Error).message); }
-      if (!stopped) timer = setTimeout(refresh, 2000);
-    };
-    void refresh();
-    return () => { stopped = true; clearTimeout(timer); };
-  }, [modelId, onUpdate]);
   const running = state?.status === 'running';
-  return <section className="panel">
-    <h2>Iterative screenshot review</h2>
-    <p className="hint">Add one target screenshot. Three independent agents compare it with fresh renders, then the worker adjusts the model. Stops when all approve or after 20 review rounds. Continues when you switch models or close this page.</p>
-    {!running && <>
-      <label className="field stacked">
-        <span>Instructions (optional)</span>
-        <textarea rows={3} value={prompt} disabled={disabled || sending}
-          placeholder="What should the reviewers and worker focus on or preserve?"
-          onChange={e => setPrompt(e.target.value)} />
-      </label>
-      <ImagePicker images={images} onChange={next => setImages(next.slice(-1))} disabled={disabled || sending} />
-      <button disabled={disabled || sending || images.length !== 1} onClick={async () => {
-        setSending(true); setError('');
-        try { const next = await onStart(images, prompt.trim()); setState(next); onUpdate(next); }
-        catch (e) { setError((e as Error).message); }
-        finally { setSending(false); }
-      }}>Start screenshot review</button>
-    </>}
-    {state && <>
-      {state.prompt && <blockquote>{state.prompt}</blockquote>}
-      <p><strong>Round {state.round}/20 · {state.phase}</strong></p>
-      {running && <button className="danger" onClick={() => api.cancelRun(modelId).catch(e => setError(e.message))}>Cancel review loop</button>}
-      {state.error && <p className="error">{state.error}</p>}
-      {state.rounds.slice().reverse().map(round => <details key={round.round} open={round.round === state.round}>
-        <summary>Round {round.round}</summary>
-        {round.reviews.map(review => <div key={review.runId} className="result">
-          <strong>{review.focus} · {review.result.verdict}</strong>
-          <p>{review.result.summary}</p>
-          {review.result.findings.map((finding, i) => <p key={i}>{finding.title}: {finding.detail}</p>)}
-          <p className="muted">{review.result.feedbackForFitter}</p>
-        </div>)}
-        {round.workerRunId && <p className="hint">Worker adjustment recorded in conversation history.</p>}
-      </details>)}
-    </>}
-    {error && <p className="error">{error}</p>}
-  </section>;
+  return (
+    <div className="screenshot-review">
+      <p className="hint">
+        Add one target picture. Each round, three independent reviewers compare it with fresh renders, then Claude adjusts the model with their findings.
+        It stops when all three approve, or after 20 rounds, and carries on if you close the page.
+      </p>
+      {!running && (
+        <>
+          <label className="field stacked">
+            <span>Instructions (optional)</span>
+            <textarea rows={2} value={prompt} disabled={disabled || sending} placeholder="What should the reviewers and the worker focus on or keep?" onChange={(e) => setPrompt(e.target.value)} />
+          </label>
+          <ImagePicker images={images} onChange={(next) => setImages(next.slice(-1))} max={1} disabled={disabled || sending} />
+          <button
+            disabled={disabled || sending || images.length !== 1}
+            onClick={async () => {
+              setSending(true);
+              setError('');
+              try {
+                await onStart(images, prompt.trim());
+              } catch (e) {
+                setError((e as Error).message);
+              } finally {
+                setSending(false);
+              }
+            }}
+          >
+            Start screenshot review
+          </button>
+        </>
+      )}
+      {state && (
+        <div className="loop-state">
+          {state.prompt && <blockquote>{state.prompt}</blockquote>}
+          <p>
+            <strong>Round {state.round}/20</strong> · {state.phase}
+            {running && <span className="spinner" />}
+          </p>
+          {running && <button className="small danger" onClick={() => onCancel().catch((e) => setError((e as Error).message))}>Cancel the loop</button>}
+          {state.error && <p className="error">{state.error}</p>}
+          {state.rounds
+            .slice()
+            .reverse()
+            .map((round) => (
+              <details key={round.round} open={round.round === state.round}>
+                <summary>Round {round.round}{round.workerAdjusted ? ' · adjusted' : ''}</summary>
+                {round.reviews.map((review) => (
+                  <button key={review.reviewId} className={`review-line verdict-${review.result.verdict}`} onClick={() => onOpenReview(review.reviewId)} title="Open this reviewer's conversation">
+                    <strong>{review.focus}</strong> · {review.result.verdict}
+                    <span className="muted">{review.result.summary}</span>
+                  </button>
+                ))}
+              </details>
+            ))}
+        </div>
+      )}
+      {error && <p className="error">{error}</p>}
+    </div>
+  );
 }

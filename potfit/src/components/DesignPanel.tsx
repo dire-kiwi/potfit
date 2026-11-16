@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
-import type { CodexRun, DesignParam, DesignReport, ParamValues, PotModel, ReferencePot } from '../../shared/types.ts';
+import type { DesignParam, DesignReport, ParamValues, PotModel, ReferencePot } from '../../shared/types.ts';
 import { api } from '../api.ts';
 import { NumberField } from './NumberField.tsx';
 
 interface Props {
   model: PotModel;
   references: ReferencePot[];
-  /** What Codex is doing to the model, if anything; nothing can be rebuilt meanwhile. */
-  lockedBy: CodexRun['kind'] | null;
+  /** Why the design can't be rebuilt now (the agent is working on it), if it can't. */
+  lockedBy: string | null;
   building: boolean;
   /** Rebuild with new values or a new script; resolves once the new mesh is shown. */
   onBuild(body: { params?: ParamValues; script?: string }): Promise<void>;
@@ -124,7 +124,7 @@ export function DesignPanel({ model, references, lockedBy, building, onBuild }: 
   const timer = useRef<number | null>(null);
   const pending = useRef<ParamValues>({});
 
-  // Follow the model when it is rebuilt elsewhere (Codex, revert, a script edit).
+  // Follow the model when it is rebuilt elsewhere (the agent, revert, a script edit).
   useEffect(() => setValues(design.params), [design.params]);
   useEffect(() => setScript(null), [design.builtAt]);
   useEffect(() => {
@@ -213,7 +213,7 @@ export function DesignPanel({ model, references, lockedBy, building, onBuild }: 
         </div>
       )}
       {design.buildError && design.buildError !== error && <p className="error">The last build failed: {design.buildError}</p>}
-      {lockedBy && <p className="hint">{lockedBy === 'review' ? 'A review is running; settings can change when it finishes.' : 'Codex is working on this design.'}</p>}
+      {lockedBy && <p className="hint">{lockedBy}</p>}
 
       {specs.length > 0 ? (
         <div className="params">

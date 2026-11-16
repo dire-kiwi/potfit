@@ -2,10 +2,10 @@
   "name": "potfit",
   "private": true,
   "version": "0.1.0",
-  "description": "Scale and align 3D flower pot models around a reference nursery pot, with Codex doing the fitting",
+  "description": "Scale and align 3D flower pot models around a reference nursery pot, with Claude Code doing the fitting",
   "type": "module",
   "engines": {
-    "node": ">=23.6"
+    "node": ">=24"
   },
   "scripts": {
     "dev": "node scripts/dev.ts",
@@ -18,6 +18,9 @@
     "pot-tool": "node tools/pot-tool.ts"
   },
   "dependencies": {
+    "@dire-kiwi/agent-threads-node": "file:vendor/dire-kiwi-agent-threads-node-0.0.0.tgz",
+    "@dire-kiwi/agent-threads-protocol": "file:vendor/dire-kiwi-agent-threads-protocol-0.0.0.tgz",
+    "@dire-kiwi/agent-threads-react": "file:vendor/dire-kiwi-agent-threads-react-0.0.0.tgz",
     "express": "^5.3.0",
     "manifold-3d": "^3.5.4",
     "react": "^19.3.1",
@@ -33,5 +36,8 @@
     "@vitejs/plugin-react": "^6.1.2",
     "typescript": "^7.0.2",
     "vite": "^8.3.5"
+  },
+  "overrides": {
+    "@dire-kiwi/agent-threads-protocol": "$@dire-kiwi/agent-threads-protocol"
   }
 }
