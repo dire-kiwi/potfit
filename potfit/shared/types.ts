@@ -4,6 +4,8 @@
 // fit: +Y is up, the reference (inner nursery) pot stands with the centre of its
 // base at the origin, and its axis runs up the Y axis.
 
+import type { RunComment } from './comments.ts';
+
 export type UpAxis = '+X' | '-X' | '+Y' | '-Y' | '+Z' | '-Z';
 export const UP_AXES: readonly UpAxis[] = ['+Z', '-Z', '+Y', '-Y', '+X', '-X'];
 
@@ -296,6 +298,8 @@ export interface Checkpoint {
   metrics: FitMetrics | null;
   rating: 'accepted' | 'rejected' | null;
   revertedAt: string | null;
+  /** The user's comments on the result card's text (absent on older checkpoints). */
+  comments?: RunComment[];
 }
 
 /** A one-off review in a thread of its own (or one reviewer of a screenshot review round). */
@@ -315,6 +319,8 @@ export interface Review {
   referenceId: string | null;
   metrics: FitMetrics | null;
   result: ReviewResult | null;
+  /** The user's comments on the verdict's text (absent on older reviews). */
+  comments?: RunComment[];
 }
 
 export interface ServerStatus {

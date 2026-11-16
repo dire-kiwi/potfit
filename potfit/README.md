@@ -174,6 +174,13 @@ placement, goals and mesh (or design script, parts and parameters) from
 before it, and 👍 / 👎 to rate it. Conversations persist: close the page, come
 back later or restart the server, and the thread is there to carry on.
 
+**Comments**: select text in a change's card or a review's verdict and click
+*Comment*. The comment box opens in the same popup. Clicking away saves it and
+Escape discards it. Saved comments show as highlights, with bubbles beside the
+text. Click a bubble to edit or delete it. Your next message in the model's
+thread sends Claude any comments it hasn't had, each under the text it's
+about, and you can send a message with comments alone.
+
 Manual adjustment: drag the gizmo in either view (W move, E scale, Q view
 only, F frame) or type numbers in *Placement*. Ctrl+Z / Ctrl+Shift+Z undo and
 redo, including Claude's changes. The section view is an orthographic cut

@@ -101,8 +101,11 @@ test('solve, check and apply a fit; the change is live and can be reverted and r
   assert.ok(events.some((e) => e.type === 'model' && !e.meshChanged));
   assert.ok(events.some((e) => e.type === 'checkpoint' && e.checkpoint.id === cp.id));
 
-  const rated = await checkpoints.rate(model.id, cp.id, 'accepted');
+  const note = { id: 'c1', field: 'summary', start: 0, end: 6, quote: 'Fitted', text: 'Why so low?', createdAt: new Date().toISOString(), sentAt: null };
+  await checkpoints.update(model.id, cp.id, { comments: [note] });
+  const rated = await checkpoints.update(model.id, cp.id, { rating: 'accepted' });
   assert.equal(rated.rating, 'accepted');
+  assert.deepEqual(rated.comments, [note], 'rating keeps the comments');
   const { model: reverted, checkpoint } = await checkpoints.revert(model.id, cp.id);
   assert.deepEqual(reverted.transform, model.transform);
   assert.equal(reverted.fit.floorGap, model.fit.floorGap);

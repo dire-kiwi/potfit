@@ -104,8 +104,9 @@ export class Checkpoints {
     return { model, checkpoint, meshChanged };
   }
 
-  async rate(modelId: string, id: string, rating: Checkpoint['rating']): Promise<Checkpoint> {
-    const c = { ...(await this.store.getCheckpoint(modelId, id)), rating };
+  /** The user's rating and comments. */
+  async update(modelId: string, id: string, patch: Partial<Pick<Checkpoint, 'rating' | 'comments'>>): Promise<Checkpoint> {
+    const c = { ...(await this.store.getCheckpoint(modelId, id)), ...patch };
     await this.store.saveCheckpoint(c);
     return c;
   }

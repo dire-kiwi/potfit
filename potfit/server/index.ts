@@ -4,10 +4,11 @@ import { readFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CommandError, type Attachment, type ThreadEvent } from '@dire-kiwi/agent-threads-node';
+import { parseComments } from '../shared/comments.ts';
 import { analyzeMesh, initialTransform } from '../shared/fit.ts';
 import { parseSTL, writeBinarySTL } from '../shared/stl.ts';
 import { applyTransform, computeBounds, validateTransform, yUpToZUp } from '../shared/transform.ts';
-import { AGENT_EFFORTS, DEFAULT_FIT, type FitSettings, type LiveEvent, type ModelPatch, type ParamValues, type ReferenceInput, type ServerStatus } from '../shared/types.ts';
+import { AGENT_EFFORTS, DEFAULT_FIT, type Checkpoint, type FitSettings, type LiveEvent, type ModelPatch, type ParamValues, type ReferenceInput, type ServerStatus } from '../shared/types.ts';
 import { Agent } from './agent/agent.ts';
 import { Checkpoints, Conflict } from './agent/checkpoints.ts';
 import { Live } from './agent/live.ts';
@@ -374,10 +375,24 @@ app.post('/api/models/:id/checkpoints/:cid/revert', route(async (req, res) => {
   res.json({ model, checkpoint, meshChanged });
 }));
 
+/** Comments from a request body, or a 400 naming what's wrong with them. */
+function bodyComments(value: unknown) {
+  try {
+    return parseComments(value);
+  } catch (e) {
+    throw new BadRequest((e as Error).message);
+  }
+}
+
 app.patch('/api/models/:id/checkpoints/:cid', route(async (req, res) => {
-  const rating = (req.body ?? {}).rating;
-  if (rating !== null && rating !== 'accepted' && rating !== 'rejected') throw new BadRequest('rating must be accepted, rejected or null');
-  const checkpoint = await checkpoints.rate(param(req, 'id'), param(req, 'cid'), rating);
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const patch: Partial<Pick<Checkpoint, 'rating' | 'comments'>> = {};
+  if ('rating' in b) {
+    if (b.rating !== null && b.rating !== 'accepted' && b.rating !== 'rejected') throw new BadRequest('rating must be accepted, rejected or null');
+    patch.rating = b.rating;
+  }
+  if ('comments' in b) patch.comments = bodyComments(b.comments);
+  const checkpoint = await checkpoints.update(param(req, 'id'), param(req, 'cid'), patch);
   live.emit(checkpoint.modelId, { type: 'checkpoint', checkpoint });
   res.json(checkpoint);
 }));
@@ -390,6 +405,10 @@ app.get('/api/models/:id/reviews', route(async (req, res) => {
 app.post('/api/models/:id/reviews', route(async (req, res) => {
   const { review } = await reviews.start(param(req, 'id'), parseAgentSettings(req.body ?? {}), { images: asAttachments(decodeImages(req.body?.images, 4)) });
   res.status(202).json(review);
+}));
+
+app.patch('/api/models/:id/reviews/:rid', route(async (req, res) => {
+  res.json(await reviews.comment(param(req, 'id'), param(req, 'rid'), bodyComments((req.body ?? {}).comments)));
 }));
 
 app.post('/api/models/:id/reviews/:rid/cancel', route(async (req, res) => {

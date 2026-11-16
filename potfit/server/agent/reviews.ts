@@ -4,9 +4,11 @@
 import { randomUUID } from 'node:crypto';
 import type { Attachment } from '@dire-kiwi/agent-threads-node';
 import { checkFit } from '../../shared/fit.ts';
+import type { RunComment } from '../../shared/comments.ts';
 import type { AgentSettings, Review, ReviewResult } from '../../shared/types.ts';
 import type { Store } from '../store.ts';
 import type { Agent } from './agent.ts';
+import { Conflict } from './checkpoints.ts';
 import type { Live } from './live.ts';
 import { BadRequest } from './settings.ts';
 import { describeFit, describeReference, prepareReviewWorkspace, type ReviewedDesign } from './workspace.ts';
@@ -116,6 +118,16 @@ export class Reviews {
     if (r.status === 'running') r = await this.finish(modelId, id, { status: 'error', error: 'The reviewer stopped without submitting a review.' });
     this.waiting.get(id)?.(r);
     this.waiting.delete(id);
+  }
+
+  /** The user's comments on a finished review. */
+  async comment(modelId: string, id: string, comments: RunComment[]): Promise<Review> {
+    const r = await this.store.getReview(modelId, id);
+    if (r.status === 'running') throw new Conflict('Comment on a review once it has finished');
+    const next = { ...r, comments };
+    await this.store.saveReview(next);
+    this.live.emit(modelId, { type: 'review', review: next });
+    return next;
   }
 
   async cancel(modelId: string, id: string) {

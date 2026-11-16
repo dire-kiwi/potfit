@@ -123,7 +123,12 @@ test('a review runs in a thread of its own and records its verdict', async (t) =
   assert.equal(finished.result?.verdict, 'pass');
   assert.ok(finished.metrics, 'the reviewed placement is measured');
 
-  const { done: silent } = await reviews.start(model.id, {}, { message: 'reply I forgot' });
+  const note = { id: 'c1', field: 'summary', start: 0, end: 4, quote: 'Fine', text: 'Really?', createdAt: new Date().toISOString(), sentAt: null };
+  assert.deepEqual((await reviews.comment(model.id, review.id, [note])).comments, [note]);
+  assert.deepEqual((await store.getReview(model.id, review.id)).comments, [note]);
+
+  const { review: running, done: silent } = await reviews.start(model.id, {}, { message: 'reply I forgot' });
+  await assert.rejects(reviews.comment(model.id, running.id, [note]), /once it has finished/);
   assert.equal((await silent).status, 'error');
 });
 

@@ -1,9 +1,10 @@
 // Where the user writes to the agent: agent-threads' Composer behaviour (a message starts a turn,
 // or steers the running one; the stop button interrupts), plus what potfit adds: screenshots of the
-// views, pictures, quick phrases, and the Claude model and effort for the thread.
+// views, pictures, quick phrases, the user's comments on results, and the Claude model and effort for the thread.
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useCommand, useInterrupt, useSetOptions, useThreadState } from '@dire-kiwi/agent-threads-react';
+import { feedbackWithComments } from '../../shared/comments.ts';
 import type { AgentSettings } from '../../shared/types.ts';
 import { ImagePicker, imageFiles, readImage, type PickedImage } from '../components/ImagePicker.tsx';
 import { AgentSettingsControls } from './AgentSettings.tsx';
@@ -51,8 +52,11 @@ export function PotComposer({ role, mine }: {
     if (Object.keys(options).length) Promise.resolve(setOptions(options)).catch((e: Error) => setError(e.message));
   };
 
+  // Comments on the model's results go with the next message in its own thread.
+  const comments = mine ? ctx.pendingComments : [];
   const submit = async () => {
-    const sent = text.trim() || (empty && role === 'fit' ? 'Fit the pot to the nursery pot.' : '');
+    const typed = text.trim() || (empty && role === 'fit' ? 'Fit the pot to the nursery pot.' : '');
+    const sent = feedbackWithComments(typed, comments);
     if (!sent || busy) return;
     setBusy(true);
     setError(null);
@@ -64,6 +68,7 @@ export function PotComposer({ role, mine }: {
       }
       for (const p of pictures) attachments.push(await imageAttachment(p.name, p.dataUrl, 1600));
       await command({ type: 'send', text: sent, ...(attachments.length ? { attachments } : {}) });
+      if (comments.length) ctx.commentsSent(comments.map((c) => c.id));
       setText('');
       setPictures([]);
     } catch (e) {
@@ -105,6 +110,9 @@ export function PotComposer({ role, mine }: {
             <button key={q} type="button" className="chip-button" onClick={() => setText(text ? `${text.trimEnd()} ${q}` : q)}>{q}</button>
           ))}
         </div>
+      )}
+      {comments.length > 0 && !locked && (
+        <p className="hint small">Your {comments.length === 1 ? 'comment' : `${comments.length} comments`} on Claude's results will go with this message.</p>
       )}
       {pictures.length > 0 && <ImagePicker images={pictures} onChange={setPictures} compact />}
       <textarea
@@ -150,7 +158,7 @@ export function PotComposer({ role, mine }: {
             ■ Stop
           </button>
         )}
-        <button type="button" className="primary send" disabled={busy || !!locked || (!text.trim() && !(empty && role === 'fit'))} onClick={() => void submit()}>
+        <button type="button" className="primary send" disabled={busy || !!locked || (!text.trim() && !comments.length && !(empty && role === 'fit'))} onClick={() => void submit()}>
           {busy ? '…' : running ? 'Steer' : empty && role === 'fit' && !text.trim() ? 'Fit it' : 'Send'}
         </button>
       </div>

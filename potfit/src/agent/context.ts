@@ -2,7 +2,8 @@
 // with only the tool call) need from the app.
 
 import { createContext, useContext } from 'react';
-import type { AgentSettings, Checkpoint, PotModel, ServerStatus } from '../../shared/types.ts';
+import type { RunComment } from '../../shared/comments.ts';
+import type { AgentSettings, Checkpoint, PotModel, Review, ServerStatus } from '../../shared/types.ts';
 
 export interface PotAgent {
   model: PotModel;
@@ -13,6 +14,15 @@ export interface PotAgent {
   checkpoints: Record<string, Checkpoint>;
   onRevert(checkpoint: Checkpoint): Promise<void>;
   onRate(checkpoint: Checkpoint, rating: Checkpoint['rating']): void;
+  /** Reviews by id, as they are now (commented on). */
+  reviews: Record<string, Review>;
+  /** Keep the user's comments on a result card's text (the whole new list). */
+  onCheckpointComments(checkpoint: Checkpoint, comments: RunComment[]): void;
+  onReviewComments(review: Review, comments: RunComment[]): void;
+  /** Comments on the model's results the agent hasn't had; they go with the next message in the model's thread. */
+  pendingComments: RunComment[];
+  /** Mark comments as sent to the agent. */
+  commentsSent(ids: string[]): void;
   /** Put text in the model's thread's composer (a review's suggestion). */
   onUseFeedback(text: string): void;
   /** The main composer's draft, kept per model while the page is open. */

@@ -1,11 +1,12 @@
 // How the thread draws potfit's tools: result cards for the changes the agent applies (with
-// Revert and a rating), thumbnails of its renders, review verdicts, design build reports. And
+// Revert, a rating and comments), thumbnails of its renders, review verdicts, design build reports. And
 // user messages without the context potfit adds to them.
 
 import { useState } from 'react';
 import { UserMessage, type Item, type ToolBodyProps, type ToolCallItem, type ToolRenderer, type ToolRowProps } from '@dire-kiwi/agent-threads-react';
 import type { Checkpoint, DesignReport, FitMetrics, Review } from '../../shared/types.ts';
 import { api } from '../api.ts';
+import { CText, Commentable } from '../components/Comments.tsx';
 import { splitContext, usePotAgent } from './context.ts';
 
 const mm = (v: number | null | undefined) => (v === null || v === undefined || !Number.isFinite(v) ? '–' : `${v.toFixed(2)} mm`);
@@ -48,17 +49,17 @@ function ResultRow({ call }: ToolRowProps) {
   const cp = ctx.checkpoints[first.id] ?? first;
   const report = cp.designReport as DesignReport | null;
   return (
-    <div className={`result-card potfit-ui ${cp.revertedAt ? 'reverted' : ''}`}>
+    <Commentable className={`result-card potfit-ui ${cp.revertedAt ? 'reverted' : ''}`} comments={cp.comments ?? []} onChange={(cs) => ctx.onCheckpointComments(cp, cs)}>
       <div className="result-head">
-        <strong>{cp.title || KIND_TITLE[cp.kind]}</strong>
+        <strong>{cp.title ? <CText field="title" text={cp.title} /> : KIND_TITLE[cp.kind]}</strong>
         <span className={`pill ${cp.confidence === 'high' ? 'ok' : cp.confidence === 'low' ? 'warn' : ''}`}>{cp.confidence} confidence</span>
         {cp.revertedAt && <span className="pill">reverted</span>}
       </div>
-      {cp.summary && <p className="result-text">{cp.summary}</p>}
+      {cp.summary && <p className="result-text"><CText field="summary" text={cp.summary} /></p>}
       {cp.metrics && <MetricsLine m={cp.metrics} />}
       {cp.meshEdit && <p className="muted small">{cp.meshEdit.trianglesBefore.toLocaleString()} → {cp.meshEdit.trianglesAfter.toLocaleString()} triangles</p>}
       {report && <p className="muted small">{report.triangles.toLocaleString()} triangles · {report.components} piece{report.components === 1 ? '' : 's'} · overhangs {report.overhangArea.toFixed(0)} mm²</p>}
-      {cp.warnings.length > 0 && <ul className="warnings">{cp.warnings.map((w) => <li key={w}>{w}</li>)}</ul>}
+      {cp.warnings.length > 0 && <ul className="warnings">{cp.warnings.map((w, i) => <li key={w}><CText field={`warning.${i}`} text={w} /></li>)}</ul>}
       <div className="result-actions">
         <button className="small" disabled={busy || !!cp.revertedAt || !!ctx.lockedBy} title="Put the model back as it was before this change"
           onClick={async () => {
@@ -78,7 +79,7 @@ function ResultRow({ call }: ToolRowProps) {
         <button className={`small ${cp.rating === 'rejected' ? 'on' : ''}`} title="Not right" onClick={() => ctx.onRate(cp, cp.rating === 'rejected' ? null : 'rejected')}>👎</button>
       </div>
       {error && <p className="error">{error}</p>}
-    </div>
+    </Commentable>
   );
 }
 
@@ -103,22 +104,23 @@ const VERDICT: Record<string, string> = { pass: 'Pass', concerns: 'Concerns', fa
 /** submit_review: the verdict, its findings, and its suggestion for the fitter. */
 function ReviewRow({ call }: ToolRowProps) {
   const ctx = usePotAgent();
-  const review = structured(call)?.review as Review | undefined;
+  const submitted = structured(call)?.review as Review | undefined;
+  const review = submitted && (ctx.reviews[submitted.id] ?? submitted);
   const r = review?.result;
-  if (!r) return <div className="result-card pending"><div className="result-head">{call.status === 'failed' ? 'Review not accepted' : 'Submitting the review…'}</div></div>;
+  if (!review || !r) return <div className="result-card pending"><div className="result-head">{call.status === 'failed' ? 'Review not accepted' : 'Submitting the review…'}</div></div>;
   return (
-    <div className={`result-card potfit-ui verdict-${r.verdict}`}>
+    <Commentable className={`result-card potfit-ui verdict-${r.verdict}`} comments={review.comments ?? []} onChange={(cs) => ctx.onReviewComments(review, cs)}>
       <div className="result-head">
         <strong>Review: {VERDICT[r.verdict]}</strong>
-        {review?.focus && <span className="pill">{review.focus}</span>}
+        {review.focus && <span className="pill">{review.focus}</span>}
       </div>
-      <p className="result-text">{r.summary}</p>
-      {review?.metrics && <MetricsLine m={review.metrics} />}
+      <p className="result-text"><CText field="summary" text={r.summary} /></p>
+      {review.metrics && <MetricsLine m={review.metrics} />}
       {r.findings.length > 0 && (
         <ul className="findings">
           {r.findings.map((f, i) => (
             <li key={i} className={f.severity}>
-              <strong>{f.title}</strong> {f.detail}
+              <strong><CText field={`finding.${i}.title`} text={f.title} /></strong> {f.detail && <CText field={`finding.${i}.detail`} text={f.detail} />}
             </li>
           ))}
         </ul>
@@ -126,11 +128,11 @@ function ReviewRow({ call }: ToolRowProps) {
       {r.feedbackForFitter && (
         <div className="suggestion">
           <span className="muted small">Suggested feedback</span>
-          <p>{r.feedbackForFitter}</p>
+          <p><CText field="feedbackForFitter" text={r.feedbackForFitter} /></p>
           <button className="small" onClick={() => ctx.onUseFeedback(r.feedbackForFitter)}>Use as feedback</button>
         </div>
       )}
-    </div>
+    </Commentable>
   );
 }
 

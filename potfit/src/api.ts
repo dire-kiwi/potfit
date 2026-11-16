@@ -14,6 +14,7 @@ import type {
   ServerStatus,
   ThreadState,
 } from '../shared/types.ts';
+import type { RunComment } from '../shared/comments.ts';
 
 async function request<T>(method: string, url: string, body?: unknown, raw?: BodyInit): Promise<T> {
   const res = await fetch(url, {
@@ -82,6 +83,8 @@ export const api = {
   checkpoints: (id: string) => request<Checkpoint[]>('GET', `/api/models/${id}/checkpoints`),
   revertCheckpoint: (id: string, cid: string) => request<{ model: PotModel; checkpoint: Checkpoint; meshChanged: boolean }>('POST', `/api/models/${id}/checkpoints/${cid}/revert`),
   rateCheckpoint: (id: string, cid: string, rating: Checkpoint['rating']) => request<Checkpoint>('PATCH', `/api/models/${id}/checkpoints/${cid}`, { rating }),
+  saveCheckpointComments: (id: string, cid: string, comments: RunComment[]) => request<Checkpoint>('PATCH', `/api/models/${id}/checkpoints/${cid}`, { comments }),
+  saveReviewComments: (id: string, rid: string, comments: RunComment[]) => request<Review>('PATCH', `/api/models/${id}/reviews/${rid}`, { comments }),
   reviews: (id: string) => request<Review[]>('GET', `/api/models/${id}/reviews`),
   startReview: (id: string, settings: AgentSettings, images: ImageBody[]) => request<Review>('POST', `/api/models/${id}/reviews`, { ...settings, images }),
   cancelReview: (id: string, rid: string) => request<Review>('POST', `/api/models/${id}/reviews/${rid}/cancel`),

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'r
 import { AGENT_EFFORTS } from '../shared/types.ts';
 import { parseSTL, writeBinarySTL } from '../shared/stl.ts';
 import { cloneTransform, transformsEqual } from '../shared/transform.ts';
+import type { RunComment } from '../shared/comments.ts';
 import type { AgentSettings, Checkpoint, FitMetrics, FitSettings, LiveEvent, ParamValues, PotModel, PotTransform, ReferencePot, Review, ScreenshotReview, ServerStatus, ThreadState } from '../shared/types.ts';
 import { AgentDock } from './agent/AgentDock.tsx';
 import { PotAgentContext, imageAttachment, type PotAgent } from './agent/context.ts';
@@ -59,6 +60,14 @@ export function App() {
   const [startingLoop, setStartingLoop] = useState(false);
   const [dockThread, setDockThread] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  // Comment lists still on their way to the server, by checkpoint or review id. They win over
+  // what the server sends meanwhile (a rating's answer, a live event), which may predate them.
+  const unsavedComments = useRef(new Map<string, RunComment[]>());
+  const commentSaves = useRef(Promise.resolve());
+  const withUnsaved = <T extends { id: string; comments?: RunComment[] }>(x: T): T => {
+    const local = unsavedComments.current.get(x.id);
+    return local ? { ...x, comments: local } : x;
+  };
   const [pendingImport, setPendingImport] = useState<PendingImport | null>(null);
   const [designing, setDesigning] = useState(false);
   const [building, setBuilding] = useState(false);
@@ -271,10 +280,10 @@ export function App() {
           setThreads((ts) => ({ ...ts, [e.thread.id]: e.thread }));
           return;
         case 'checkpoint':
-          setCheckpoints((cs) => ({ ...cs, [e.checkpoint.id]: e.checkpoint }));
+          setCheckpoints((cs) => ({ ...cs, [e.checkpoint.id]: withUnsaved(e.checkpoint) }));
           return;
         case 'review':
-          setReviews((rs) => [...rs.filter((r) => r.id !== e.review.id), e.review].sort((a, b) => a.createdAt.localeCompare(b.createdAt)));
+          setReviews((rs) => [...rs.filter((r) => r.id !== e.review.id), withUnsaved(e.review)].sort((a, b) => a.createdAt.localeCompare(b.createdAt)));
           return;
         case 'loop':
           setLoop(e.state);
@@ -541,6 +550,40 @@ export function App() {
     }
   };
 
+  // ------------------------------------------------------------ comments
+
+  /** Keep a checkpoint's or review's comments, saving them in order so a quick edit can't be overtaken by the add before it. */
+  const saveComments = (kind: 'checkpoint' | 'review', target: Checkpoint | Review, comments: RunComment[]) => {
+    const isReview = kind === 'review';
+    unsavedComments.current.set(target.id, comments);
+    if (isReview) setReviews((rs) => rs.map((r) => (r.id === target.id ? { ...r, comments } : r)));
+    else setCheckpoints((cs) => ({ ...cs, [target.id]: { ...(cs[target.id] ?? (target as Checkpoint)), comments } }));
+    const settled = () => {
+      if (unsavedComments.current.get(target.id) === comments) unsavedComments.current.delete(target.id);
+    };
+    commentSaves.current = commentSaves.current
+      .then((): Promise<unknown> => (isReview ? api.saveReviewComments(target.modelId, target.id, comments) : api.saveCheckpointComments(target.modelId, target.id, comments)))
+      .then(settled, (e) => {
+        settled();
+        fail(e);
+      });
+  };
+  // The model's results, oldest first, with comments the agent hasn't had yet.
+  const commented = [
+    ...Object.values(checkpoints).map((item) => ({ kind: 'checkpoint' as const, item })),
+    ...reviews.map((item) => ({ kind: 'review' as const, item })),
+  ]
+    .filter(({ item }) => item.comments?.some((c) => !c.sentAt))
+    .sort((a, b) => a.item.createdAt.localeCompare(b.item.createdAt));
+  const pendingComments = commented.flatMap(({ item }) => item.comments!.filter((c) => !c.sentAt));
+  const commentsSent = (ids: string[]) => {
+    const sent = new Set(ids);
+    const sentAt = new Date().toISOString();
+    for (const { kind, item } of commented) {
+      if (item.comments!.some((c) => sent.has(c.id))) saveComments(kind, item, item.comments!.map((c) => (sent.has(c.id) && !c.sentAt ? { ...c, sentAt } : c)));
+    }
+  };
+
   const startReview = async () => {
     const m = modelRef.current;
     if (!m) return;
@@ -585,14 +628,19 @@ export function App() {
     onRevert: async (cp) => {
       // The model comes back over /live, mesh and all.
       const { checkpoint } = await api.revertCheckpoint(cp.modelId, cp.id);
-      setCheckpoints((cs) => ({ ...cs, [checkpoint.id]: checkpoint }));
+      setCheckpoints((cs) => ({ ...cs, [checkpoint.id]: withUnsaved(checkpoint) }));
     },
     onRate: (cp, rating) => {
       api
         .rateCheckpoint(cp.modelId, cp.id, rating)
-        .then((saved) => setCheckpoints((cs) => ({ ...cs, [saved.id]: saved })))
+        .then((saved) => setCheckpoints((cs) => ({ ...cs, [saved.id]: withUnsaved(saved) })))
         .catch(fail);
     },
+    reviews: Object.fromEntries(reviews.map((r) => [r.id, r])),
+    onCheckpointComments: (cp, comments) => saveComments('checkpoint', cp, comments),
+    onReviewComments: (review, comments) => saveComments('review', review, comments),
+    pendingComments,
+    commentsSent,
     onUseFeedback: (text) => {
       setDrafts((d) => ({ ...d, [model.id]: text }));
       setDockThread(null);
