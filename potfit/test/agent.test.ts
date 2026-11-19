@@ -58,11 +58,11 @@ async function setup(t: { after(fn: () => Promise<void>): void }) {
   );
   const events: ThreadEvent[] = [];
   agent.sdk.subscribe((e) => events.push(e));
-  return { dir, store, agent, reviews, live, model, ref, positions, events };
+  return { dir, store, agent, reviews, live, model, ref, positions, events, checkpoints };
 }
 
 test('a fitting thread gets potfit context, calls app tools and is held to the policy', async (t) => {
-  const { store, agent, model, ref, positions, events } = await setup(t);
+  const { store, agent, model, ref, positions, events, checkpoints } = await setup(t);
   const thread = await agent.mainThread(model.id, { effort: 'low' });
   assert.equal(thread.model, 'haiku', 'the server default model');
   assert.equal(thread.effort, 'low');
@@ -90,6 +90,15 @@ test('a fitting thread gets potfit context, calls app tools and is held to the p
   await agent.runTurn(thread.id, 'reply ok');
   const second = events.filter((e) => e.type === 'item.added' && e.item.type === 'user_message').at(-1);
   assert.match(second && second.type === 'item.added' && second.item.type === 'user_message' ? second.item.text : '', /moved or scaled it by hand/);
+
+  // The user goes back to the first version: the next message says so, and that it's not a hand move.
+  const [first] = await store.listVersions(model.id);
+  await checkpoints.versions.checkout(model.id, first.id);
+  await agent.runTurn(thread.id, 'reply ok');
+  const third = events.filter((e) => e.type === 'item.added' && e.item.type === 'user_message').at(-1);
+  const thirdText = third && third.type === 'item.added' && third.item.type === 'user_message' ? third.item.text : '';
+  assert.match(thirdText, /Version: v1, "Imported" \(the user went back to this version since your last change/);
+  assert.doesNotMatch(thirdText, /moved or scaled it by hand/);
 
   // No shell, and nothing outside the workspace.
   await agent.runTurn(thread.id, 'tool Bash {"command":"id"} ');

@@ -49,7 +49,8 @@ if (migrated?.models) console.log(`potfit: removed Codex's runs and workspaces (
 const toolPath = join(root, 'tools', 'pot-tool.ts');
 const designs = new Designs(store, { root, toolPath });
 const live = new Live();
-const checkpoints = new Checkpoints(store, designs);
+const checkpoints = new Checkpoints(store, designs, live);
+const versions = checkpoints.versions;
 const reviews = new Reviews(store, live);
 let screenshotReviews: ScreenshotReviews;
 const agent = new Agent({
@@ -217,7 +218,8 @@ app.post('/api/models', express.raw({ type: () => true, limit: '1gb' }), route(a
     },
     writeBinarySTL(positions, `potfit: ${name}`),
   );
-  res.status(201).json(model);
+  await versions.ensureCurrent(model.id);
+  res.status(201).json(await store.getModel(model.id));
 }));
 
 /** The images a send command attaches, as the agent takes them. */
@@ -241,6 +243,7 @@ app.post('/api/designs', route(async (req, res) => {
   if (b.avoidOverhangs !== undefined && typeof b.avoidOverhangs !== 'boolean') throw new BadRequest('avoidOverhangs must be a boolean');
   // The agent's first message carries the pictures, which saves them as the design's references.
   let model = await designs.create({ name, description, images: useAgent ? [] : images, fit, ref, avoidOverhangs: b.avoidOverhangs !== false });
+  await versions.ensureCurrent(model.id);
   if (useAgent) {
     const thread = await agent.mainThread(model.id, settings);
     await agent.handle({ type: 'send', thread_id: thread.id, text: description || 'Design a pot like the attached pictures.', attachments: asAttachments(images) });
@@ -373,6 +376,37 @@ app.post('/api/models/:id/checkpoints/:cid/revert', route(async (req, res) => {
   live.emit(id, { type: 'model', model, meshChanged });
   live.emit(id, { type: 'checkpoint', checkpoint });
   res.json({ model, checkpoint, meshChanged });
+}));
+
+// The model's versions, oldest first. A model from before versions gets its first one now.
+app.get('/api/models/:id/versions', route(async (req, res) => {
+  const id = param(req, 'id');
+  if (!(await store.getModel(id)).versionId) await versions.ensureCurrent(id);
+  res.json(await store.listVersions(id));
+}));
+
+// Save the model as it is now as a version (nothing, if it hasn't changed since its version).
+app.post('/api/models/:id/versions', route(async (req, res) => {
+  const id = param(req, 'id');
+  await notWhileRunning(id);
+  const label = typeof req.body?.label === 'string' && req.body.label.trim() ? req.body.label.trim().slice(0, 80) : 'Saved';
+  const version = await versions.ensureCurrent(id, { kind: 'saved', label });
+  res.json({ version, model: await store.getModel(id) });
+}));
+
+// Go to a version. The next change branches from it.
+app.post('/api/models/:id/versions/:vid/checkout', route(async (req, res) => {
+  const id = param(req, 'id');
+  await notWhileRunning(id);
+  const { model, meshChanged } = await versions.checkout(id, param(req, 'vid'));
+  live.emit(id, { type: 'model', model, meshChanged });
+  res.json({ model, meshChanged });
+}));
+
+app.patch('/api/models/:id/versions/:vid', route(async (req, res) => {
+  const label = typeof req.body?.label === 'string' ? req.body.label.trim().slice(0, 80) : '';
+  if (!label) throw new BadRequest('label must be a non-empty string');
+  res.json(await versions.rename(param(req, 'id'), param(req, 'vid'), label));
 }));
 
 /** Comments from a request body, or a 400 naming what's wrong with them. */

@@ -85,8 +85,13 @@ export class Designs {
     return join(this.dir(modelId), '.applied');
   }
 
+  /** The parts as they were when the model's mesh was last built. */
+  appliedParts(modelId: string) {
+    return join(this.appliedDir(modelId), 'parts-before');
+  }
+
   /** Remember the script and parts as they were built, so unapplied edits can be undone. */
-  private async markApplied(modelId: string) {
+  async markApplied(modelId: string) {
     const dir = this.appliedDir(modelId);
     await rm(dir, { recursive: true, force: true });
     await mkdir(dir, { recursive: true });

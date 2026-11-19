@@ -256,9 +256,21 @@ export class Agent {
       `Nursery pot: ${ref ? describeReference(ref) : 'none chosen yet'}`,
       `Fit goals: ${describeFit(model.fit)}`,
     ];
+    const version = model.versionId ? await this.opts.store.getVersion(model.id, model.versionId).catch(() => null) : null;
+    const checkpoints = (await this.opts.store.listCheckpoints(model.id)).filter((c) => c.threadId === threadId);
+    const mine = checkpoints.at(-1);
+    const switched = !!version && !!model.versionSwitchedAt && (!mine || model.versionSwitchedAt > mine.createdAt);
+    if (version) {
+      lines.push(
+        `Version: v${version.number}, "${version.label}"` +
+          (switched
+            ? ` (the user went back to this version since your last change, and your next change branches from it; ${model.design ? 'design.mjs and parts/ are as they were in it, so read design.mjs again before you edit it' : "mesh.stl is this version's mesh"})`
+            : ''),
+      );
+    }
     if (!model.design) {
-      const last = (await this.opts.store.listCheckpoints(model.id)).filter((c) => c.threadId === threadId && !c.revertedAt).at(-1);
-      const moved = last && !transformsEqual(last.transform, model.transform);
+      const last = checkpoints.filter((c) => !c.revertedAt).at(-1);
+      const moved = !switched && last && !transformsEqual(last.transform, model.transform);
       lines.push(`Placement now: ${JSON.stringify(model.transform)}${moved ? ' (the user moved or scaled it by hand since your last change)' : ''}`);
     } else {
       lines.push(`Design parameters now: ${JSON.stringify(model.design.params)}`);

@@ -399,8 +399,8 @@ export async function toolsFor(deps: ToolDeps): Promise<Record<AgentRole, Tool[]
       const fit = { ...model.fit, ...goals };
       const positions = parseSTL(await readFile(store.meshFile(model.id)));
       const metrics = ref ? checkFit(positions, a.transform, ref, fit) : null;
-      const next = await store.updateModel(model.id, { transform: a.transform, fit });
-      const saved = await checkpoints.save({ ...checkpoint, transform: a.transform, fit, summary: String(a.summary ?? ''), warnings: strings(a.warnings), confidence: confidenceOf(a.confidence), metrics });
+      await store.updateModel(model.id, { transform: a.transform, fit });
+      const { checkpoint: saved, model: next } = await checkpoints.save({ ...checkpoint, transform: a.transform, fit, summary: String(a.summary ?? ''), warnings: strings(a.warnings), confidence: confidenceOf(a.confidence), metrics });
       live.emit(model.id, { type: 'model', model: next, meshChanged: false });
       live.emit(model.id, { type: 'checkpoint', checkpoint: saved });
       return reply(`Applied; the user sees it now (checkpoint ${saved.id}). Server's measurements: ${metrics ? metricsLine(metrics) : 'none (no nursery pot)'}.`, { checkpoint: saved });
@@ -452,8 +452,8 @@ export async function toolsFor(deps: ToolDeps): Promise<Record<AgentRole, Tool[]
         const fit = { ...model.fit, ...goals };
         const metrics = ref ? checkFit(edited, placeIt, ref, fit) : null;
         const meshEdit = { trianglesBefore: model.triangleCount, trianglesAfter: edited.length / 9 };
-        const next = await store.updateModel(model.id, { transform: placeIt, fit, triangleCount: meshEdit.trianglesAfter });
-        const saved = await checkpoints.save({ ...checkpoint, transform: placeIt, fit, meshEdit, summary: String(a.summary ?? ''), warnings: strings(a.warnings), confidence: confidenceOf(a.confidence), metrics });
+        await store.updateModel(model.id, { transform: placeIt, fit, triangleCount: meshEdit.trianglesAfter });
+        const { checkpoint: saved, model: next } = await checkpoints.save({ ...checkpoint, transform: placeIt, fit, meshEdit, summary: String(a.summary ?? ''), warnings: strings(a.warnings), confidence: confidenceOf(a.confidence), metrics });
         live.emit(model.id, { type: 'model', model: next, meshChanged: true });
         live.emit(model.id, { type: 'checkpoint', checkpoint: saved });
         return reply(
@@ -531,7 +531,7 @@ export async function toolsFor(deps: ToolDeps): Promise<Record<AgentRole, Tool[]
       const title = String(a.title ?? '').trim().slice(0, 80);
       if (title && next.name === DEFAULT_DESIGN_NAME) next = await store.updateModel(model.id, { name: title });
       const report = next.design?.report ?? null;
-      const saved = await checkpoints.save({
+      const { checkpoint: saved, model: after } = await checkpoints.save({
         ...checkpoint,
         title,
         transform: next.transform,
@@ -542,7 +542,7 @@ export async function toolsFor(deps: ToolDeps): Promise<Record<AgentRole, Tool[]
         designReport: report,
         metrics: report?.metrics ?? null,
       });
-      live.emit(model.id, { type: 'model', model: next, meshChanged: true });
+      live.emit(model.id, { type: 'model', model: after, meshChanged: true });
       live.emit(model.id, { type: 'checkpoint', checkpoint: saved });
       const metrics = report?.metrics;
       return reply(
