@@ -2055,3 +2055,143 @@ mark.cmark.draft {
 button.danger-text {
   color: var(--bad);
 }
+
+/* Versions: a button by the model's name, and the tree it opens. */
+
+.versions {
+  position: relative;
+  flex: none;
+}
+
+.version-switch {
+  font-variant-numeric: tabular-nums;
+}
+
+.version-dirty {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.versions-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 20;
+  width: min(440px, calc(100vw - 20px));
+  max-height: min(70vh, 560px);
+  overflow: auto;
+  padding: 10px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.versions-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.versions-pop > p {
+  margin: 4px 0 8px;
+}
+
+.version-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 2px 4px;
+  border-radius: 6px;
+}
+
+.version-row:hover {
+  background: var(--surface-2);
+}
+
+.version-row.current {
+  background: var(--accent-soft);
+}
+
+.version-row.unsaved {
+  margin-left: 14px;
+  font-style: italic;
+  color: var(--muted);
+}
+
+.version-dot {
+  width: 14px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.version-row.current .version-dot {
+  color: var(--accent);
+}
+
+.version-number {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  min-width: 2.2em;
+}
+
+.version-label,
+.version-rename {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.version-rename input {
+  width: 100%;
+  padding: 2px 6px;
+}
+
+.version-time {
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.version-row .icon {
+  opacity: 0;
+}
+
+.version-row:hover .icon,
+.version-row .icon:focus-visible {
+  opacity: 1;
+}
+
+/* Each branch hangs under the version it forks from. */
+.version-forks {
+  margin-left: 10px;
+}
+
+.version-branch {
+  border-left: 2px solid var(--line-strong);
+  padding-left: 6px;
+  margin-top: 2px;
+}
+
+.version-branch:has(.version-row.current) {
+  border-left-color: var(--accent);
+}
+
+@media (pointer: coarse) {
+  .version-row .icon {
+    opacity: 1;
+  }
+}
+
+@media (max-width: 860px), (max-height: 500px) {
+  .versions-pop {
+    position: fixed;
+    top: 48px;
+    left: 10px;
+    right: 10px;
+    width: auto;
+  }
+}

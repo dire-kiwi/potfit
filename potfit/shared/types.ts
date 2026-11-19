@@ -94,6 +94,10 @@ export interface PotModel {
   threadId?: string | null;
   /** Set for pots designed in the app rather than imported (absent on older models). */
   design?: PotDesign | null;
+  /** The version the model is at, or was at before the edits since (absent before its first version). */
+  versionId?: string | null;
+  /** When the user last switched versions (so the agent can be told). */
+  versionSwitchedAt?: string | null;
 }
 
 export type ModelPatch = Partial<Pick<PotModel, 'name' | 'transform' | 'fit' | 'avoidOverhangs'>>;
@@ -298,8 +302,36 @@ export interface Checkpoint {
   metrics: FitMetrics | null;
   rating: 'accepted' | 'rejected' | null;
   revertedAt: string | null;
+  /** The version the change made (absent on checkpoints from before versions). */
+  versionId?: string | null;
   /** The user's comments on the result card's text (absent on older checkpoints). */
   comments?: RunComment[];
+}
+
+/**
+ * A saved state of a model, in a tree: each version's parent is the one the model was at when it was
+ * made, so going back to an earlier version and changing it starts a new branch. Kept in
+ * models/<id>/versions/<id>.json, with meshes, scripts and parts stored once by content.
+ */
+export interface ModelVersion {
+  id: string;
+  modelId: string;
+  parentId: string | null;
+  /** 1, 2, 3... in the order they were made. */
+  number: number;
+  createdAt: string;
+  /** What made it: the first version, a change the agent applied, the user's own edits, or the user saving one. */
+  kind: 'original' | Checkpoint['kind'] | 'manual' | 'saved';
+  label: string;
+  /** The agent's change that made it. */
+  checkpointId: string | null;
+  transform: PotTransform;
+  fit: FitSettings;
+  triangleCount: number;
+  /** sha-256 of the mesh, the applied design script and each part. */
+  mesh: string;
+  /** A designed model's build: its script, parts and what it was built with. */
+  design: { script: string; parts: Record<string, string>; state: Pick<PotDesign, 'params' | 'paramSpec' | 'report' | 'builtFor' | 'builtAt'> } | null;
 }
 
 /** A one-off review in a thread of its own (or one reviewer of a screenshot review round). */
@@ -355,5 +387,6 @@ export type LiveEvent =
   | { type: 'model'; model: PotModel; meshChanged: boolean }
   | { type: 'thread'; thread: ThreadState }
   | { type: 'checkpoint'; checkpoint: Checkpoint }
+  | { type: 'version'; version: ModelVersion }
   | { type: 'review'; review: Review }
   | { type: 'loop'; state: ScreenshotReview };

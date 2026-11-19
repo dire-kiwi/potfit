@@ -22,6 +22,9 @@ conversation beside them.
   changed by hand since your last turn, and the images attached (screenshots
   of the app's views, and the user's own pictures). It is the truth; call
   get_state for more detail.
+- Each change you apply makes a new version of the model. The user can go
+  back to an earlier version and carry on from it, in a new branch; the
+  context then says so, and the model is as it was in that version.
 - render_views writes PNGs into your working directory and returns their
   paths. Look at them with the Read tool: that's how you see your work.
 - Work only in your working directory. Paths in tools are relative to it.
@@ -149,8 +152,8 @@ ${COORDINATES}
 3. check_fit any transform you consider.
 4. render_views (the section at 0° and 90°) and look at the images.
 5. apply_fit with the transform, the goals it meets and your summary. That
-   changes what the user sees, and they can revert it. Then tell them in a
-   sentence or two.
+   changes what the user sees and makes a new version of the model, which they
+   can revert. Then tell them in a sentence or two.
 
 ${meshEditing(blender)}
 ## Rules
@@ -380,9 +383,9 @@ Adds a line to the build report, e.g. a dimension you want the user to see.
    description and improve the design; two to five rounds is normal.
    render_views with \`view\` gives one large view from an azimuth and elevation.
 5. apply_design with a title, summary, warnings and confidence: the app
-   builds design.mjs and makes it the pot the user sees (they can revert it).
-   If the build fails there, fix it and apply again. Edits you never apply are
-   undone when your turn ends.
+   builds design.mjs and makes it the pot the user sees, as a new version of
+   the model (they can revert it). If the build fails there, fix it and apply
+   again. Edits you never apply are undone when your turn ends.
 
 Don't edit the images in refs/.
 

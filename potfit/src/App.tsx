@@ -3,13 +3,14 @@ import { AGENT_EFFORTS } from '../shared/types.ts';
 import { parseSTL, writeBinarySTL } from '../shared/stl.ts';
 import { cloneTransform, transformsEqual } from '../shared/transform.ts';
 import type { RunComment } from '../shared/comments.ts';
-import type { AgentSettings, Checkpoint, FitMetrics, FitSettings, LiveEvent, ParamValues, PotModel, PotTransform, ReferencePot, Review, ScreenshotReview, ServerStatus, ThreadState } from '../shared/types.ts';
+import type { AgentSettings, Checkpoint, FitMetrics, FitSettings, LiveEvent, ModelVersion, ParamValues, PotModel, PotTransform, ReferencePot, Review, ScreenshotReview, ServerStatus, ThreadState } from '../shared/types.ts';
 import { AgentDock } from './agent/AgentDock.tsx';
 import { PotAgentContext, imageAttachment, type PotAgent } from './agent/context.ts';
 import { api, type ModelPatchBody } from './api.ts';
 import { DesignDialog } from './components/DesignDialog.tsx';
 import type { PickedImage } from './components/ImagePicker.tsx';
 import { ImportDialog, type PendingImport } from './components/ImportDialog.tsx';
+import { VersionsMenu } from './components/Versions.tsx';
 import { GeometryClient } from './geometry.ts';
 import { Hud } from './steps/Hud.tsx';
 import { STEPS, Stepper, type StepId, type StepState } from './steps/Stepper.tsx';
@@ -56,6 +57,7 @@ export function App() {
   const [threads, setThreads] = useState<Record<string, ThreadState>>({});
   const [checkpoints, setCheckpoints] = useState<Record<string, Checkpoint>>({});
   const [reviews, setReviews] = useState<Review[]>([]);
+  const [versions, setVersions] = useState<ModelVersion[]>([]);
   const [loop, setLoop] = useState<ScreenshotReview | null>(null);
   const [startingLoop, setStartingLoop] = useState(false);
   const [dockThread, setDockThread] = useState<string | null>(null);
@@ -282,6 +284,9 @@ export function App() {
         case 'checkpoint':
           setCheckpoints((cs) => ({ ...cs, [e.checkpoint.id]: withUnsaved(e.checkpoint) }));
           return;
+        case 'version':
+          setVersions((vs) => [...vs.filter((v) => v.id !== e.version.id), e.version].sort((a, b) => a.number - b.number));
+          return;
         case 'review':
           setReviews((rs) => [...rs.filter((r) => r.id !== e.review.id), withUnsaved(e.review)].sort((a, b) => a.createdAt.localeCompare(b.createdAt)));
           return;
@@ -300,6 +305,7 @@ export function App() {
     setMetrics(null);
     setCheckpoints({});
     setReviews([]);
+    setVersions([]);
     setLoop(null);
     setDockThread(null);
     history.current = { past: [], future: [] };
@@ -317,7 +323,7 @@ export function App() {
     (async () => {
       try {
         setBusy('Loading model…');
-        const [{ model: m, threads: ts }, buf, cps, rvs, lp] = await Promise.all([
+        const [{ model: m, threads: ts }, buf, cps, rvs, lp, vs] = await Promise.all([
           api.model(selectedId),
           fetch(api.meshUrl(selectedId)).then((r) => {
             if (!r.ok) throw new Error(`Could not load the mesh (${r.status})`);
@@ -326,6 +332,7 @@ export function App() {
           api.checkpoints(selectedId),
           api.reviews(selectedId),
           api.screenshotReview(selectedId),
+          api.versions(selectedId),
         ]);
         if (cancelled) return;
         const pos = parseSTL(buf);
@@ -335,6 +342,7 @@ export function App() {
         setThreads((all) => ({ ...all, ...Object.fromEntries(ts.map((t) => [t.id, t])) }));
         setCheckpoints(Object.fromEntries(cps.map((c) => [c.id, c])));
         setReviews(rvs);
+        setVersions(vs);
         setLoop(lp);
         setStep(!m.fit.referenceId ? 'pot' : m.design ? 'model' : 'fit');
         viewer.current?.setMesh(pos);
@@ -619,6 +627,12 @@ export function App() {
     }
   };
 
+  /** Go to a version. Edits on their way to the server are part of what's kept; the model comes back over /live. */
+  const checkoutVersion = async (v: ModelVersion) => {
+    if (!(await flushSave())) throw new Error("Couldn't save your edits, so the version wasn't changed.");
+    await api.checkoutVersion(v.modelId, v.id);
+  };
+
   const agentContext: PotAgent | null = model && {
     model,
     status,
@@ -636,6 +650,8 @@ export function App() {
         .then((saved) => setCheckpoints((cs) => ({ ...cs, [saved.id]: withUnsaved(saved) })))
         .catch(fail);
     },
+    versions: Object.fromEntries(versions.map((v) => [v.id, v])),
+    onCheckout: (v) => checkoutVersion(v),
     reviews: Object.fromEntries(reviews.map((r) => [r.id, r])),
     onCheckpointComments: (cp, comments) => saveComments('checkpoint', cp, comments),
     onReviewComments: (review, comments) => saveComments('review', review, comments),
@@ -791,6 +807,22 @@ export function App() {
           <span className="model-name">{model?.name ?? (busy ? 'Loading…' : 'Choose a model')}</span>
           <span className="caret">▾</span>
         </button>
+        {model && (
+          <VersionsMenu
+            model={model}
+            versions={versions}
+            lockedBy={agentBusy ? 'Claude is working on the model; wait for it or stop it to switch versions.' : loopRunning || startingLoop ? 'The screenshot review is running; cancel it to switch versions.' : building ? 'The design is building.' : null}
+            onCheckout={(v) => checkoutVersion(v).catch(fail)}
+            onSave={async () => {
+              if (!(await flushSave())) return;
+              const { model: saved } = await api.saveVersion(model.id).catch((e) => (fail(e), { model: null }));
+              if (saved) setModel((m) => (m?.id === saved.id ? { ...m, versionId: saved.versionId } : m));
+            }}
+            onRename={async (v, label) => {
+              await api.renameVersion(v.modelId, v.id, label).catch(fail);
+            }}
+          />
+        )}
         <Stepper step={step} states={stepStates} enabled={(s) => s === 'pot' || s === 'model' || !!model} onStep={(s) => { setStep(s); setTab('steps'); }} />
         <div className="status" title={status ? `${status.claude.available ? status.claude.version : `Claude Code: ${status.claude.error}`}\n${status.blender.available ? status.blender.version : 'Blender not installed: no mesh edits or Blender parts'}` : ''}>
           <span className={`dot ${status?.claude.available ? 'ok' : status ? 'bad' : ''}`} /> Claude

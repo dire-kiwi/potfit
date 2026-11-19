@@ -10,12 +10,14 @@
 //                                      and the design agent's working files
 //   models/<id>/checkpoints/<id>/      checkpoint.json and what a change replaced (mesh, script, parts)
 //   models/<id>/reviews/<id>/          review.json and the reviewer's workspace
+//   models/<id>/versions/<id>.json     ModelVersion
+//   models/<id>/versions/blobs/<sha>   the versions' meshes, design scripts and parts, stored once each
 
 import { randomUUID } from 'node:crypto';
 import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import type { Checkpoint, ModelPatch, Review, PotDesign, PotModel, ReferenceInput, ReferencePot } from '../shared/types.ts';
+import type { Checkpoint, ModelPatch, ModelVersion, Review, PotDesign, PotModel, ReferenceInput, ReferencePot } from '../shared/types.ts';
 
 async function writeJson(file: string, value: unknown) {
   const tmp = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
@@ -133,7 +135,7 @@ export class Store {
   }
 
   /** `patch.design` is merged into a designed model's design; it is ignored for imported models. */
-  updateModel(id: string, patch: ModelPatch & Partial<Pick<PotModel, 'threadId' | 'triangleCount'>> & { design?: Partial<PotDesign> }): Promise<PotModel> {
+  updateModel(id: string, patch: ModelPatch & Partial<Pick<PotModel, 'threadId' | 'triangleCount' | 'versionId' | 'versionSwitchedAt'>> & { design?: Partial<PotDesign> }): Promise<PotModel> {
     const file = join(this.modelDir(id), 'model.json');
     return this.serial(file, async () => {
       const m = await this.getModel(id);
@@ -180,6 +182,42 @@ export class Store {
     await mkdir(dir, { recursive: true });
     const file = join(dir, 'checkpoint.json');
     await this.serial(file, () => writeJson(file, c));
+  }
+
+  // -------------------------------------------------------------- versions
+
+  versionsDir(modelId: string) {
+    return join(this.modelDir(modelId), 'versions');
+  }
+
+  private versionFile(modelId: string, id: string) {
+    if (!/^[\w-]{1,80}$/.test(id)) throw new NotFound(`version ${id} not found`);
+    return join(this.versionsDir(modelId), `${id}.json`);
+  }
+
+  /** Oldest first. */
+  async listVersions(modelId: string): Promise<ModelVersion[]> {
+    const names = await readdir(this.versionsDir(modelId)).catch(() => [] as string[]);
+    const all = await Promise.all(names.filter((n) => n.endsWith('.json')).map((n) => this.getVersion(modelId, n.slice(0, -5)).catch(() => null)));
+    return all.filter((v): v is ModelVersion => v !== null).sort((a, b) => a.number - b.number);
+  }
+
+  async getVersion(modelId: string, id: string): Promise<ModelVersion> {
+    const v = await readJson<ModelVersion | null>(this.versionFile(modelId, id), null);
+    if (!v) throw new NotFound(`version ${id} not found`);
+    return v;
+  }
+
+  async saveVersion(v: ModelVersion): Promise<void> {
+    await mkdir(this.versionsDir(v.modelId), { recursive: true });
+    const file = this.versionFile(v.modelId, v.id);
+    await this.serial(file, () => writeJson(file, v));
+  }
+
+  /** Where a version's file with this sha-256 is kept. */
+  blobFile(modelId: string, sha: string) {
+    if (!/^[0-9a-f]{64}$/.test(sha)) throw new NotFound(`blob ${sha} not found`);
+    return join(this.versionsDir(modelId), 'blobs', sha);
   }
 
   // --------------------------------------------------------------- reviews

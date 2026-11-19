@@ -1,5 +1,6 @@
 // Checkpoints: what an applying tool call (apply_fit, apply_mesh_edit, apply_design) replaced, so
-// the user can revert it, and how they rated it.
+// the user can revert it, and how they rated it. Each one also makes a version of the model (see
+// versions.ts), and reverting goes back to the version before it.
 
 import { copyFile, cp, mkdir, readFile, rename } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -7,19 +8,25 @@ import { join } from 'node:path';
 import type { Checkpoint, PotModel } from '../../shared/types.ts';
 import type { Designs } from '../design.ts';
 import { NotFound, type Store } from '../store.ts';
+import { labelFrom, Versions } from '../versions.ts';
+import type { Live } from './live.ts';
 import { BadRequest } from './settings.ts';
 
 export class Conflict extends Error {}
 
 type New = Omit<Checkpoint, 'id' | 'modelId' | 'createdAt' | 'transformBefore' | 'fitBefore' | 'paramsBefore' | 'triangleCountBefore' | 'rating' | 'revertedAt'>;
 
+const KIND_LABEL: Record<Checkpoint['kind'], string> = { fit: 'Fit applied', 'mesh-edit': 'Mesh edited', design: 'Design applied' };
+
 export class Checkpoints {
   private store: Store;
   private designs: Designs;
+  readonly versions: Versions;
 
-  constructor(store: Store, designs: Designs) {
+  constructor(store: Store, designs: Designs, live: Live | null = null) {
     this.store = store;
     this.designs = designs;
+    this.versions = new Versions(store, designs, live);
   }
 
   /** A checkpoint id from the tool call's (unique per thread), or a fresh one. */
@@ -35,6 +42,8 @@ export class Checkpoints {
    * caller fills in and saves with `save` once the change is made.
    */
   async begin(before: PotModel, change: { kind: Checkpoint['kind']; threadId: string; toolCallId: string | null }): Promise<Checkpoint> {
+    // The user's edits since the last version become one, so the change's version follows them.
+    await this.versions.ensureCurrent(before.id);
     const id = this.newId(change.toolCallId);
     const dir = this.store.checkpointDir(before.id, id);
     await mkdir(dir, { recursive: true });
@@ -71,18 +80,24 @@ export class Checkpoints {
     };
   }
 
-  async save(c: Checkpoint & Partial<New>): Promise<Checkpoint> {
-    await this.store.saveCheckpoint(c);
-    return c;
+  /** Save the checkpoint once its change is made, and make the model as it is now a version. */
+  async save(c: Checkpoint & Partial<New>): Promise<{ checkpoint: Checkpoint; model: PotModel }> {
+    const { version, model } = await this.versions.record(c.modelId, { kind: c.kind, label: c.title?.trim() || labelFrom(c.summary, KIND_LABEL[c.kind]), checkpointId: c.id });
+    const checkpoint = { ...c, versionId: version.id };
+    await this.store.saveCheckpoint(checkpoint);
+    return { checkpoint, model };
   }
 
-  /** Put the model back as it was before the checkpoint's change. */
+  /** Put the model back as it was before the checkpoint's change: the version before its own. */
   async revert(modelId: string, id: string): Promise<{ model: PotModel; checkpoint: Checkpoint; meshChanged: boolean }> {
     const c = await this.store.getCheckpoint(modelId, id);
     const dir = this.store.checkpointDir(modelId, id);
     let model: PotModel;
     let meshChanged = false;
-    if (c.kind === 'design') {
+    const parentId = c.versionId ? (await this.store.getVersion(modelId, c.versionId).catch(() => null))?.parentId : null;
+    if (parentId) {
+      ({ model, meshChanged } = await this.versions.checkout(modelId, parentId));
+    } else if (c.kind === 'design') {
       if (!existsSync(join(dir, 'before.mjs'))) throw new NotFound('This checkpoint has no saved script to go back to');
       await this.designs.restoreParts(modelId, dir);
       model = await this.designs.rebuild(modelId, { script: await readFile(join(dir, 'before.mjs'), 'utf8'), params: c.paramsBefore ?? {}, resetParams: true });
