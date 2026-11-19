@@ -856,7 +856,7 @@ label.inline.angle input {
   margin: 0 4px 0 0;
 }
 
-/* Fixed rather than in the stage, which a phone hides while Claude's tab is open. */
+/* Fixed rather than in the stage, which is invisible on a phone while Claude's tab is open. */
 .toast {
   position: fixed;
   right: 432px;
@@ -1706,8 +1706,11 @@ textarea.code {
     grid-template-areas: 'top' 'panel' 'tabs';
   }
 
+  /* Under the conversation and invisible, but still laid out: the views keep a size, so the
+     screenshots sent with a message from here are real ones. */
   .app.tab-agent .stage {
-    display: none;
+    grid-area: panel;
+    visibility: hidden;
   }
 
   .pot-composer .chips {
