@@ -240,16 +240,47 @@ loop runs, it drives the model's thread and manual edits pause.
 
 ### On a phone or tablet
 
-On a narrow or short screen the views sit on top and a panel below them
-(beside them on a phone held sideways). Tabs switch between **Steps**, **View**
-(no panel, so the views get the whole screen) and **Claude**. One view shows at
-a time; *3D* and *Section* in the toolbar switch between them. In the 3D view
+On a narrow or short screen the tabs at the bottom (down the left on a phone
+held sideways) flip between the model and Claude. **Steps** puts the views on
+top and the step's panel below them (beside them sideways), **View** gives the
+views the whole screen, and **Claude** gives the whole screen to the
+conversation. Starting a fit, a design or a review flips to Claude, and the tab
+shows a spinner while Claude works. One view shows at a time; *3D* and *Section* in the toolbar switch between them. In the 3D view
 one finger turns the camera; in the section view it pans. Two fingers zoom and
 pan in both, and a finger on the gizmo moves or scales the pot.
 
 The server only listens on loopback by default, and the Vite dev server
 always does. To use a phone, build the app and run `npm start` with
 `POTFIT_HOST` set to an address the phone can reach (see Security).
+
+### Android app
+
+`android/` is a small Android app (Android 10 or newer) that opens your potfit
+server full screen, without the browser's bars. It's the web app, served by
+the server as it is in a browser, so it's always the server's version. On top
+of a browser tab it keeps the page loaded when you rotate the phone or switch
+apps, asks for a proxy's basic-auth login once and remembers it, saves
+exported STLs and design scripts to Downloads, and opens links to other sites
+in the browser.
+
+Build it with Android Studio, or with JDK 17 or newer and the Android SDK
+(platform 35):
+
+```sh
+cd potfit/android
+ANDROID_HOME=~/Android/Sdk ./gradlew assembleDebug
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+GitHub also builds it for each change to `android/`: the APK is the
+*potfit-android* artifact of the *Android app* workflow's run. Each build is
+signed with that run's own debug key, so uninstall the app before installing a
+later one (it keeps only the server's address and your login).
+
+On first start it asks for the server's address (`https://…`, or `http://…`
+on a home network). Long-press the app's icon for *Change server*. The server
+has to be reachable from the phone: put it behind an authenticating proxy, or
+set `POTFIT_HOST` on a network you trust (see Security).
 
 ## Choosing a model and reasoning effort
 
@@ -424,6 +455,7 @@ src/      React UI: steps/ (the workflow panels), agent/ (the Claude panel), com
           three.js viewer (viewer/PotViewer.ts), importers, worker
 test/     node --test suites (npm test), with agent-threads' fake claude in fixtures/
 vendor/   agent-threads' packages, packed (see below)
+android/  the Android app (a WebView around the server's web app)
 ```
 
 `npm test` runs the tests (the agent's run against a scriptable fake `claude`,

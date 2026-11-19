@@ -21,7 +21,7 @@ import { PotViewer, type GizmoMode, type ScaleLock } from './viewer/PotViewer.ts
 const LAST_MODEL_KEY = 'potfit.model';
 const SETTINGS_KEY = 'potfit.agentSettings';
 
-/** On a phone one of the side panels shows under the views, or neither (`view`). */
+/** On a phone: the steps panel under the views, the views alone, or Claude's conversation on its own. */
 type MobileTab = 'steps' | 'view' | 'agent';
 type ViewMode = 'split' | '3d' | 'section';
 
@@ -887,11 +887,6 @@ export function App() {
         </div>
         {model && reference && <Hud metrics={metrics} fit={model.fit} />}
         {agentBusy && <div className="working-banner"><span className="spinner" /> Claude is working on the model; manual edits are paused.</div>}
-        {error && (
-          <div className="toast" role="alert" onClick={() => setError(null)}>
-            {error} <span className="muted">(dismiss)</span>
-          </div>
-        )}
       </main>
 
       <aside className="dock-panel">
@@ -914,6 +909,12 @@ export function App() {
           </div>
         )}
       </aside>
+
+      {error && (
+        <div className="toast" role="alert" onClick={() => setError(null)}>
+          {error} <span className="muted">(dismiss)</span>
+        </div>
+      )}
 
       <nav className="mobile-tabs">
         <button className={tab === 'steps' ? 'on' : ''} onClick={() => setTab('steps')}>
