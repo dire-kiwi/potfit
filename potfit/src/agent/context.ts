@@ -3,7 +3,7 @@
 
 import { createContext, useContext } from 'react';
 import type { RunComment } from '../../shared/comments.ts';
-import type { AgentSettings, Checkpoint, PotModel, Review, ServerStatus } from '../../shared/types.ts';
+import type { AgentSettings, Checkpoint, ModelVersion, PotModel, Review, ServerStatus } from '../../shared/types.ts';
 
 export interface PotAgent {
   model: PotModel;
@@ -14,6 +14,9 @@ export interface PotAgent {
   checkpoints: Record<string, Checkpoint>;
   onRevert(checkpoint: Checkpoint): Promise<void>;
   onRate(checkpoint: Checkpoint, rating: Checkpoint['rating']): void;
+  /** The model's versions by id, and going to one. */
+  versions: Record<string, ModelVersion>;
+  onCheckout(version: ModelVersion): Promise<void>;
   /** Reviews by id, as they are now (commented on). */
   reviews: Record<string, Review>;
   /** Keep the user's comments on a result card's text (the whole new list). */

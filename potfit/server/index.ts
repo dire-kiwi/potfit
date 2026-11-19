@@ -391,7 +391,9 @@ app.post('/api/models/:id/versions', route(async (req, res) => {
   await notWhileRunning(id);
   const label = typeof req.body?.label === 'string' && req.body.label.trim() ? req.body.label.trim().slice(0, 80) : 'Saved';
   const version = await versions.ensureCurrent(id, { kind: 'saved', label });
-  res.json({ version, model: await store.getModel(id) });
+  const model = await store.getModel(id);
+  if (version) live.emit(id, { type: 'model', model, meshChanged: false });
+  res.json({ version, model });
 }));
 
 // Go to a version. The next change branches from it.

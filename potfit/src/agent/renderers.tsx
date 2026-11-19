@@ -48,12 +48,33 @@ function ResultRow({ call }: ToolRowProps) {
   }
   const cp = ctx.checkpoints[first.id] ?? first;
   const report = cp.designReport as DesignReport | null;
+  // The version the change made, if it was made since versions came in.
+  const version = cp.versionId ? ctx.versions[cp.versionId] : undefined;
+  const current = !!version && ctx.model.versionId === version.id;
+  const reverted = version ? ctx.model.versionId === version.parentId : !!cp.revertedAt;
+  const act = async (fn: () => Promise<void>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await fn();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
-    <Commentable className={`result-card potfit-ui ${cp.revertedAt ? 'reverted' : ''}`} comments={cp.comments ?? []} onChange={(cs) => ctx.onCheckpointComments(cp, cs)}>
+    <Commentable className={`result-card potfit-ui ${!version && cp.revertedAt ? 'reverted' : ''}`} comments={cp.comments ?? []} onChange={(cs) => ctx.onCheckpointComments(cp, cs)}>
       <div className="result-head">
         <strong>{cp.title ? <CText field="title" text={cp.title} /> : KIND_TITLE[cp.kind]}</strong>
         <span className={`pill ${cp.confidence === 'high' ? 'ok' : cp.confidence === 'low' ? 'warn' : ''}`}>{cp.confidence} confidence</span>
-        {cp.revertedAt && <span className="pill">reverted</span>}
+        {version ? (
+          <span className={`pill ${current ? 'ok' : ''}`} title={current ? 'The model is at the version this change made' : 'This change made this version'}>
+            v{version.number}{current ? ' · current' : ''}
+          </span>
+        ) : (
+          cp.revertedAt && <span className="pill">reverted</span>
+        )}
       </div>
       {cp.summary && <p className="result-text"><CText field="summary" text={cp.summary} /></p>}
       {cp.metrics && <MetricsLine m={cp.metrics} />}
@@ -61,20 +82,15 @@ function ResultRow({ call }: ToolRowProps) {
       {report && <p className="muted small">{report.triangles.toLocaleString()} triangles · {report.components} piece{report.components === 1 ? '' : 's'} · overhangs {report.overhangArea.toFixed(0)} mm²</p>}
       {cp.warnings.length > 0 && <ul className="warnings">{cp.warnings.map((w, i) => <li key={w}><CText field={`warning.${i}`} text={w} /></li>)}</ul>}
       <div className="result-actions">
-        <button className="small" disabled={busy || !!cp.revertedAt || !!ctx.lockedBy} title="Put the model back as it was before this change"
-          onClick={async () => {
-            setBusy(true);
-            setError(null);
-            try {
-              await ctx.onRevert(cp);
-            } catch (e) {
-              setError((e as Error).message);
-            } finally {
-              setBusy(false);
-            }
-          }}>
+        <button className="small" disabled={busy || reverted || !!ctx.lockedBy} title={version ? 'Go back to the version before this change; your next change branches from it' : 'Put the model back as it was before this change'}
+          onClick={() => act(() => ctx.onRevert(cp))}>
           ↶ Revert
         </button>
+        {version && !current && (
+          <button className="small" disabled={busy || !!ctx.lockedBy} title="Go to the version this change made" onClick={() => act(() => ctx.onCheckout(version))}>
+            ↷ Go to v{version.number}
+          </button>
+        )}
         <button className={`small ${cp.rating === 'accepted' ? 'on' : ''}`} title="Good" onClick={() => ctx.onRate(cp, cp.rating === 'accepted' ? null : 'accepted')}>👍</button>
         <button className={`small ${cp.rating === 'rejected' ? 'on' : ''}`} title="Not right" onClick={() => ctx.onRate(cp, cp.rating === 'rejected' ? null : 'rejected')}>👎</button>
       </div>

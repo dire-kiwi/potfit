@@ -39,7 +39,7 @@ npm start          # http://localhost:5174
 | `POTFIT_HOST` | `127.0.0.1` | Address the API (and built app) listens on |
 | `POTFIT_PORT` | `5174` | API (and built app) port |
 | `POTFIT_WEB_PORT` | `5173` | Vite dev server port |
-| `POTFIT_DATA` | `potfit/data` | Where nursery pots, models, checkpoints, reviews and the agent's threads (`threads.db`) are stored |
+| `POTFIT_DATA` | `potfit/data` | Where nursery pots, models, their versions, checkpoints, reviews and the agent's threads (`threads.db`) are stored |
 | `POTFIT_CLAUDE_BIN` | `claude` | Claude Code executable |
 | `POTFIT_CLAUDE_MODEL` | Claude Code's default | Model for threads whose user picked *Default*: an alias (`opus`, `sonnet`, `haiku`, `fable`) or a full model ID |
 | `POTFIT_CLAUDE_EFFORT` | Claude Code's default | Reasoning effort likewise: `low`, `medium`, `high`, `xhigh` or `max` |
@@ -169,10 +169,23 @@ common requests. The model and effort selectors apply to the thread from its
 next step; *New conversation* starts a fresh one (the old one stays above).
 While Claude works on the model, manual edits pause.
 
-Every change Claude applies has a card with **Revert**, which puts back the
-placement, goals and mesh (or design script, parts and parameters) from
-before it, and 👍 / 👎 to rate it. Conversations persist: close the page, come
+Every change Claude applies has a card with its version number, **Revert**,
+which puts back the placement, goals and mesh (or design script, parts and
+parameters) from before it, and 👍 / 👎 to rate it. Conversations persist: close the page, come
 back later or restart the server, and the thread is there to carry on.
+
+**Versions**: each change Claude applies makes a new version of the model,
+and the version button by the model's name (⑂ v5, say) opens them as a tree.
+*Go to* puts the model back as it was at any version: placement, goals and
+mesh, or a design's script, parts and parameters. Carry on from there, by
+hand or with Claude, and your next change starts a new branch from that
+version; the other branches stay in the tree, so you can go back to them too.
+Your own edits (moves, goals, design settings) show as *Unsaved changes*
+until you *Save* them. If you switch versions or Claude applies a change
+first, they're kept as a version anyway, so nothing is lost. Double-click a
+version (or ✎) to rename it. *Revert* on a change's card goes to the version
+before it, and *Go to vN* goes back to the version the change made. Claude is
+told when you've gone back to a version, and works from it.
 
 **Comments**: select text in a change's card or a review's verdict and click
 *Comment*. The comment box opens in the same popup. Clicking away saves it and
@@ -296,7 +309,20 @@ changes the model, the server saves what it replaces in
 `models/<id>/checkpoints/<id>/` (placement, goals and parameters, and the old
 mesh, or the last applied script and parts). The tool's result carries the
 checkpoint, which the panel draws as the change's card; Revert and the rating
-work on it. A mesh edit is stored unscaled, so if the fit is rescaled later the
+work on it.
+
+**Versions** (`server/versions.ts`). Each version is a `models/<id>/versions/<id>.json`
+with its parent, the placement, goals and triangle count, and the sha-256 of
+the mesh (and, for a design, of the applied script and each part, with the
+parameters and build report). The files themselves are kept once each in
+`versions/blobs/`, so versions that only move the pot share a mesh. The model
+records the version it's at. Before an applying tool changes the model, the
+user's edits since that version (if any) become a version; after it, the
+result becomes a child of it. Going to a version keeps the user's edits the
+same way, copies its files back (a design's script and parts count as
+applied, so the designer's workspace matches) and sets the model's fields.
+Revert on a card goes to the parent of the version the change made. Models
+from before versions get their first version when they're next opened. A mesh edit is stored unscaled, so if the fit is rescaled later the
 edit scales with it.
 
 **Workspaces.** A fitter works in `models/<id>/agent/`: `mesh.stl` (the
@@ -390,7 +416,7 @@ clearance, standing 8 mm proud. The solver gives scale 1.000 for both.
 
 ```
 shared/   types, transforms, STL I/O, slicing, analysis, check and solver
-server/   Express API, file store, designs, the screenshot review loop, the Codex migration
+server/   Express API, file store, model versions, designs, the screenshot review loop, the Codex migration
   agent/  agent-threads backend, tools, permission policy, prompts, checkpoints, reviews
 tools/    pot-tool CLI, PNG renderers, the design toolkit (potlib.ts), build and starter script,
           and blender/potfit_bpy.py (Blender helpers for the agent)
