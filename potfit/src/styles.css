@@ -856,9 +856,10 @@ label.inline.angle input {
   margin: 0 4px 0 0;
 }
 
+/* Fixed rather than in the stage, which a phone hides while Claude's tab is open. */
 .toast {
-  position: absolute;
-  right: 12px;
+  position: fixed;
+  right: 432px;
   bottom: 60px;
   z-index: 10;
   background: var(--surface);
@@ -1676,6 +1677,10 @@ textarea.code {
   .step-short {
     display: inline;
   }
+
+  .toast {
+    right: 372px;
+  }
 }
 
 .mobile-tabs {
@@ -1695,9 +1700,14 @@ textarea.code {
     grid-template-areas: 'top' 'stage' 'tabs';
   }
 
-  /* The conversation needs the room more than the views. */
+  /* Claude's conversation is a page of its own: the views make way for it. */
   .app.tab-agent {
-    grid-template-rows: auto minmax(150px, 30%) minmax(0, 1fr) auto;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    grid-template-areas: 'top' 'panel' 'tabs';
+  }
+
+  .app.tab-agent .stage {
+    display: none;
   }
 
   .pot-composer .chips {
@@ -1829,6 +1839,7 @@ textarea.code {
   .toast {
     left: 8px;
     right: 8px;
+    bottom: 58px;
     max-width: none;
   }
 
@@ -1851,7 +1862,19 @@ textarea.code {
 
   .app.tab-view {
     grid-template-columns: auto minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
     grid-template-areas: 'tabs stage';
+  }
+
+  .app.tab-agent {
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    grid-template-areas: 'tabs panel';
+  }
+
+  .toast {
+    left: 88px;
+    bottom: 12px;
   }
 
   .topbar {
