@@ -17,6 +17,7 @@ import { Live } from '../server/agent/live.ts';
 import { toolsFor } from '../server/agent/tools.ts';
 import { prepareReviewWorkspace } from '../server/agent/workspace.ts';
 import { Designs } from '../server/design.ts';
+import { ScreenshotReviews } from '../server/screenshot-review.ts';
 import { Store } from '../server/store.ts';
 import { buildDesign } from '../tools/design-build.ts';
 import { latheY, yToZ } from './helpers.ts';
@@ -223,4 +224,14 @@ test("a designed model's pieces come from its script, and follow its builds and 
   assert.deepEqual((await store.getModel(model.id)).pieces, []);
   const { model: back } = await checkpoints.versions.checkout(model.id, applied.structured.checkpoint.versionId!);
   assert.deepEqual(back.pieces, [{ name: 'lid', triangleCount: 12 }]);
+});
+
+test("the screenshot review's render of the produced pot includes its pieces", async () => {
+  const { store, model } = await setup();
+  const loop = new ScreenshotReviews(store, {} as never, {} as never, new Live());
+  const bare = await loop.renderProduced(model.id);
+  await store.writePieces(model.id, { eyes: writeBinarySTL(box([0, -40, 40], [10, 6, 10])) });
+  const withEyes = await loop.renderProduced(model.id);
+  assert.equal(withEyes.subarray(1, 4).toString(), 'PNG');
+  assert.notDeepEqual(withEyes, bare, 'the eyes are drawn');
 });

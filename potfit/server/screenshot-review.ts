@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import type { Attachment } from '@dire-kiwi/agent-threads-node';
 import type { AgentSettings, ScreenshotReview } from '../shared/types.ts';
 import { parseSTL } from '../shared/stl.ts';
-import { applyTransform, yUpToZUp } from '../shared/transform.ts';
+import { applyTransform, computeBounds, yUpToZUp } from '../shared/transform.ts';
 import { renderViews } from '../tools/render3d.ts';
 import type { Agent } from './agent/agent.ts';
 import { Conflict } from './agent/checkpoints.ts';
@@ -101,6 +101,25 @@ export class ScreenshotReviews {
     void this.execute(id, state, image(target, 'target'), settings, controller.signal).catch((e) => console.error('Could not save screenshot review:', e));
     return state;
   }
+  /** The model as placed, Z up, with its separate pieces after the pot, drawn in blue. */
+  async renderProduced(id: string): Promise<Buffer> {
+    const model = await this.store.getModel(id);
+    const raw = parseSTL(await readFile(this.store.meshFile(id)));
+    const bounds = computeBounds(raw);
+    const pot = yUpToZUp(applyTransform(raw, model.transform, bounds));
+    const pieces = await Promise.all(
+      (await this.store.readPieces(id)).map(async (p) => yUpToZUp(applyTransform(parseSTL(await readFile(this.store.pieceFile(id, p.name))), model.transform, bounds))),
+    );
+    const all = new Float32Array(pieces.reduce((n, p) => n + p.length, pot.length));
+    all.set(pot);
+    let at = pot.length;
+    for (const p of pieces) {
+      all.set(p, at);
+      at += p.length;
+    }
+    return renderViews(all, { tile: 400, pieceFrom: pieces.length ? pot.length / 9 : undefined }).png;
+  }
+
   private async execute(id: string, state: ScreenshotReview, target: Attachment, settings: AgentSettings, signal: AbortSignal) {
     const go = () => state.status === 'running';
     try {
@@ -109,8 +128,7 @@ export class ScreenshotReviews {
         const entry: ScreenshotReview['rounds'][number] = { round, reviews: [] };
         state.rounds.push(entry);
         const model = await this.store.getModel(id);
-        const raw = parseSTL(await readFile(this.store.meshFile(id)));
-        const produced = image({ name: 'produced', ext: 'png', data: renderViews(yUpToZUp(applyTransform(raw, model.transform)), { tile: 400 }).png }, 'produced');
+        const produced = image({ name: 'produced', ext: 'png', data: await this.renderProduced(id) }, 'produced');
         for (const focus of REVIEW_FOCUS) {
           if (!go()) break;
           state.phase = `Reviewing: ${focus}`;
