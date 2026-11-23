@@ -5,6 +5,7 @@
 //   references.json
 //   models/<id>/model.json             PotModel
 //   models/<id>/mesh.stl               normalised binary STL (raw model coordinates)
+//   models/<id>/pieces/<name>.stl      separate printed pieces, in the same raw coordinates
 //   models/<id>/agent/                 working directory the fitting agent runs in
 //   models/<id>/design/                designed pots: design.mjs, refs/ (the user's images), parts/,
 //                                      and the design agent's working files
@@ -14,10 +15,10 @@
 //   models/<id>/versions/blobs/<sha>   the versions' meshes, design scripts and parts, stored once each
 
 import { randomUUID } from 'node:crypto';
-import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import type { Checkpoint, ModelPatch, ModelVersion, Review, PotDesign, PotModel, ReferenceInput, ReferencePot } from '../shared/types.ts';
+import { pieceNameError, type Checkpoint, type ModelPatch, type ModelPiece, type ModelVersion, type Review, type PotDesign, type PotModel, type ReferenceInput, type ReferencePot } from '../shared/types.ts';
 
 async function writeJson(file: string, value: unknown) {
   const tmp = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
@@ -112,6 +113,56 @@ export class Store {
     return join(this.modelDir(id), 'mesh.stl');
   }
 
+  /** The model's separate pieces, each a binary STL in the mesh's raw coordinates. */
+  piecesDir(id: string) {
+    return join(this.modelDir(id), 'pieces');
+  }
+
+  pieceFile(id: string, name: string) {
+    if (pieceNameError(name)) throw new NotFound(`piece ${name} not found`);
+    return join(this.piecesDir(id), `${name}.stl`);
+  }
+
+  /** The pieces on disk, by name. */
+  async readPieces(id: string): Promise<ModelPiece[]> {
+    const names = await readdir(this.piecesDir(id)).catch(() => [] as string[]);
+    const pieces: ModelPiece[] = [];
+    for (const file of names.sort()) {
+      const name = file.replace(/\.stl$/, '');
+      if (!file.endsWith('.stl') || pieceNameError(name)) continue;
+      // Binary STL: an 84-byte header and count, then 50 bytes a triangle.
+      const { size } = await stat(join(this.piecesDir(id), file));
+      pieces.push({ name, triangleCount: Math.max(0, Math.floor((size - 84) / 50)) });
+    }
+    return pieces;
+  }
+
+  /**
+   * Add, replace (binary STL bytes) or remove (null) pieces, or replace them all with `all`, and
+   * record the result on the model. Returns the model.
+   */
+  async writePieces(id: string, changes: Record<string, Uint8Array | null>, opts: { all?: boolean } = {}): Promise<PotModel> {
+    const dir = this.piecesDir(id);
+    if (opts.all) await rm(dir, { recursive: true, force: true });
+    await mkdir(dir, { recursive: true });
+    for (const [name, data] of Object.entries(changes)) {
+      const file = this.pieceFile(id, name);
+      if (data === null) {
+        await rm(file, { force: true });
+        continue;
+      }
+      const tmp = `${file}.${randomUUID().slice(0, 8)}.tmp`;
+      await writeFile(tmp, data);
+      await rename(tmp, file);
+    }
+    return this.syncPieces(id);
+  }
+
+  /** Make the model's list of pieces match the files. */
+  async syncPieces(id: string): Promise<PotModel> {
+    return this.updateModel(id, { pieces: await this.readPieces(id) });
+  }
+
   async listModels(): Promise<PotModel[]> {
     const ids = await readdir(join(this.dir, 'models')).catch(() => [] as string[]);
     const models = await Promise.all(ids.map((id) => this.getModel(id).catch(() => null)));
@@ -135,7 +186,7 @@ export class Store {
   }
 
   /** `patch.design` is merged into a designed model's design; it is ignored for imported models. */
-  updateModel(id: string, patch: ModelPatch & Partial<Pick<PotModel, 'threadId' | 'triangleCount' | 'versionId' | 'versionSwitchedAt'>> & { design?: Partial<PotDesign> }): Promise<PotModel> {
+  updateModel(id: string, patch: ModelPatch & Partial<Pick<PotModel, 'threadId' | 'triangleCount' | 'versionId' | 'versionSwitchedAt' | 'pieces'>> & { design?: Partial<PotDesign> }): Promise<PotModel> {
     const file = join(this.modelDir(id), 'model.json');
     return this.serial(file, async () => {
       const m = await this.getModel(id);

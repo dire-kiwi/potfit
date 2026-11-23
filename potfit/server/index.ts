@@ -325,6 +325,33 @@ app.get('/api/models/:id/export.stl', route(async (req, res) => {
   res.type('model/stl').send(Buffer.from(writeBinarySTL(out, `potfit export: ${model.name}`)));
 }));
 
+// A separate piece in the mesh's raw coordinates, for the viewer.
+app.get('/api/models/:id/pieces/:name.stl', route(async (req, res) => {
+  const id = param(req, 'id');
+  const file = store.pieceFile(id, param(req, 'name'));
+  if (!existsSync(file)) throw new NotFound('piece not found');
+  res.type('model/stl').sendFile(`${param(req, 'name')}.stl`, { root: store.piecesDir(id) });
+}));
+
+// A separate piece placed with the pot and scaled like it, Z up, centred and standing on z = 0, to print on its own.
+app.get('/api/models/:id/pieces/:name/export.stl', route(async (req, res) => {
+  const model = await store.getModel(param(req, 'id'));
+  const name = param(req, 'name');
+  const file = store.pieceFile(model.id, name);
+  if (!existsSync(file)) throw new NotFound('piece not found');
+  const rawBounds = computeBounds(parseSTL(await readFile(store.meshFile(model.id))));
+  const out = yUpToZUp(applyTransform(parseSTL(await readFile(file)), model.transform, rawBounds));
+  const b = computeBounds(out);
+  const cx = (b.min.x + b.max.x) / 2, cy = (b.min.y + b.max.y) / 2;
+  for (let i = 0; i < out.length; i += 3) {
+    out[i] -= cx;
+    out[i + 1] -= cy;
+    out[i + 2] -= b.min.z;
+  }
+  res.setHeader('Content-Disposition', `attachment; filename="${slug(model.name)}-${name}.stl"`);
+  res.type('model/stl').send(Buffer.from(writeBinarySTL(out, `potfit export: ${model.name}, ${name}`)));
+}));
+
 // Images the agent rendered (render_views), and a design's reference images.
 app.get(/^\/api\/models\/([0-9a-f-]{36})\/files\/((?:agent|design|reviews\/[0-9a-f-]{36})\/renders\/[\w.-]+\.png|design\/refs\/[\w-]+\.(?:png|jpg|webp))$/, route(async (req, res) => {
   const id = String(req.params[0]);

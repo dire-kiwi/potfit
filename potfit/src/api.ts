@@ -64,6 +64,9 @@ export const api = {
   deleteModel: (id: string) => request<void>('DELETE', `/api/models/${id}`),
   meshUrl: (id: string) => `/api/models/${id}/mesh.stl`,
   exportUrl: (id: string) => `/api/models/${id}/export.stl`,
+  /** A separate piece in the mesh's raw coordinates, and placed for printing on its own. */
+  pieceUrl: (id: string, name: string) => `/api/models/${id}/pieces/${encodeURIComponent(name)}.stl`,
+  pieceExportUrl: (id: string, name: string) => `/api/models/${id}/pieces/${encodeURIComponent(name)}/export.stl`,
   /** An image the agent rendered, or a design's reference image, by its path in the model's directory. */
   fileUrl: (id: string, path: string) => `/api/models/${id}/files/${path}`,
 

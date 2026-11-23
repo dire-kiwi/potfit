@@ -26,6 +26,8 @@ const COLORS = {
   sectionBackground: 0x14171b,
   pot: 0xc4724e,
   cut: 0xf1c27d,
+  piece: 0x6f9fd8,
+  pieceCut: 0xbfd8f5,
   reference: 0x4ade80,
   envelope: 0xa3e635,
   axis: 0x60a5fa,
@@ -91,6 +93,9 @@ export class PotViewer {
   private main: View;
   private section: View;
   private geometry = new THREE.BufferGeometry();
+  /** The model's separate pieces: their geometry, and their meshes in each view's pot group. */
+  private pieces: { name: string; geometry: THREE.BufferGeometry; meshes: THREE.Mesh[] }[] = [];
+  private hiddenPieces = new Set<string>();
   private raw: Bounds | null = null;
   private transform: PotTransform | null = null;
   private dragStart: PotTransform | null = null;
@@ -248,6 +253,43 @@ export class PotViewer {
     this.syncTransform();
   }
 
+  /**
+   * The model's separate pieces, in the mesh's raw coordinates: they're placed with the pot, cut by
+   * the section like it, and drawn in blue.
+   */
+  setPieces(pieces: { name: string; positions: Float32Array }[]) {
+    for (const p of this.pieces) {
+      for (const m of p.meshes) {
+        m.removeFromParent();
+        (m.material as THREE.Material).dispose();
+      }
+      p.geometry.dispose();
+    }
+    this.pieces = pieces.map(({ name, positions }) => {
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      geometry.computeVertexNormals();
+      geometry.computeBoundingSphere();
+      const meshes: THREE.Mesh[] = [];
+      for (const v of [this.main, this.section]) {
+        const front = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: COLORS.piece, roughness: 0.6, metalness: 0.05, side: THREE.FrontSide, clippingPlanes: [this.clipPlane] }));
+        const back = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ color: COLORS.pieceCut, side: THREE.BackSide, clippingPlanes: [this.clipPlane] }));
+        front.userData.face = 'front';
+        back.userData.face = 'back';
+        v.potGroup.add(front, back);
+        meshes.push(front, back);
+      }
+      return { name, geometry, meshes };
+    });
+    this.applyCutaway();
+  }
+
+  /** The separate pieces not to show, by name. */
+  setHiddenPieces(names: string[]) {
+    this.hiddenPieces = new Set(names);
+    this.applyCutaway();
+  }
+
   setTransform(t: PotTransform | null) {
     this.transform = t ? cloneTransform(t) : null;
     this.syncTransform();
@@ -343,6 +385,7 @@ export class PotViewer {
     disposeTree(this.refSection);
     disposeTree(this.grid);
     disposeTree(this.sectionGrid);
+    this.setPieces([]);
     this.geometry.dispose();
   }
 
@@ -403,6 +446,11 @@ export class PotViewer {
       const g = this.geometry;
       if (!g.boundingBox) g.computeBoundingBox();
       box.union(g.boundingBox!.clone().applyMatrix4(this.main.potGroup.matrixWorld));
+      for (const p of this.pieces) {
+        if (this.hiddenPieces.has(p.name)) continue;
+        if (!p.geometry.boundingBox) p.geometry.computeBoundingBox();
+        box.union(p.geometry.boundingBox!.clone().applyMatrix4(this.main.potGroup.matrixWorld));
+      }
     }
     if (this.ref) {
       const r = Math.max(this.ref.topOD, this.ref.bottomOD) / 2;
@@ -474,6 +522,20 @@ export class PotViewer {
     (this.main.front.material as THREE.Material).side = this.cutaway ? THREE.FrontSide : THREE.DoubleSide;
     this.main.back.visible = this.cutaway;
     (this.main.front.material as THREE.Material).needsUpdate = true;
+    // Pieces likewise, in the 3D view; in the section view they're always cut.
+    for (const p of this.pieces) {
+      const hidden = this.hiddenPieces.has(p.name);
+      for (const m of p.meshes) {
+        const inMain = m.parent === this.main.potGroup;
+        const mat = m.material as THREE.Material;
+        if (inMain) {
+          mat.clippingPlanes = planes;
+          if (m.userData.face === 'front') mat.side = this.cutaway ? THREE.FrontSide : THREE.DoubleSide;
+          mat.needsUpdate = true;
+        }
+        m.visible = !hidden && (m.userData.face === 'front' || !inMain || this.cutaway);
+      }
+    }
     this.invalidate();
   }
 

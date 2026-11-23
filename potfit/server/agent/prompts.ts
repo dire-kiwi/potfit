@@ -113,12 +113,33 @@ ${blender}, which run_blender runs headless.
    model's mesh (the user can revert it) and places it where you edited it.
    Then check_fit and render_views to check the result.
 
+### Separate pieces
+
+A model can have separate pieces beside the pot, each printed on its own
+and exported as its own STL: eyes that fit into sockets, a lid, a hat, a
+detachable tail. When the user asks for a part to print separately, cut where
+it goes out of the pot (a socket, a recess) and model the piece to fit it, in
+the same Blender script, then give both to one apply_mesh_edit: \`file\` for
+the pot and \`pieces: [{ name: "eyes", file: "placed-eyes.stl" }]\`.
+
+- Pieces are in the same Z-up placed frame as the pot, modelled where they
+  sit on it. They move and scale with the pot, and the export lays each one
+  down on its own.
+- Leave a gap of 0.2 to 0.4 mm between a piece and its socket (per side), so
+  it fits once printed; more for a loose fit. A piece must not overlap the pot.
+- One piece can hold several solids (both eyes in "eyes"), but each solid
+  must be closed. Give it a base that prints flat, or say how to lay it.
+- export_placed_mesh also writes each existing piece (placed-<name>.stl), to
+  change it. Replace a piece by giving its name again; \`removePieces\` drops one.
+- check_fit measures the pot alone; render_views draws pieces in blue.
+
 Rules for edits:
 
 - Only edit when the user asks for a change to the shape, or agrees to one
   you suggest.
-- The result must be one closed solid (pb.report: closed_solid true,
-  pieces 1). Leave the outside of the pot as it was unless asked.
+- The pot must be one closed solid (pb.report: closed_solid true,
+  pieces 1); what prints separately goes in apply_mesh_edit's \`pieces\`.
+  Leave the outside of the pot as it was unless asked.
 - Fill solid rather than leaving a hollow shelf: a shelf over a void needs
   supports, and the slicer's infill keeps a solid fill light. Mention the
   extra material (the report's volume).
@@ -262,8 +283,26 @@ export default function design({ pot, lib, sdf, M, CS, params, note }) {
 }
 \`\`\`
 
-Return one Manifold (an array is unioned). It must be one solid piece standing
+Return one Manifold (an array is unioned). It must be one solid standing
 on z = 0 with the cavity cut by \`L.cavity()\`.
+
+### Separate pieces
+
+To print parts on their own (eyes that fit into sockets, a lid, a hat), return
+\`{ pot, pieces: { eyes: ..., hat: ... } }\` instead: \`pot\` is the pot as
+above, and each piece a Manifold (or an array, unioned), named with lower-case
+letters, digits and dashes. The app shows the pieces with the pot and exports
+each as its own STL.
+
+- Model each piece where it sits on the pot, in the design frame; the export
+  lays it down on its own.
+- Cut its socket or recess out of the pot, and leave a gap of 0.2 to 0.4 mm per
+  side so it fits once printed. A piece must not overlap the pot:
+  build_design reports any overlap.
+- A piece can hold several solids (both eyes in one), each closed. Give it a
+  side that prints flat, or say how to lay it.
+- Only make pieces when the user asks for parts to print separately (or agrees
+  when you suggest it); otherwise everything is one solid pot.
 
 ### pot
 
@@ -356,7 +395,8 @@ Adds a line to the build report, e.g. a dimension you want the user to see.
 
 ## Printing rules (FDM, printed upright, as designed)
 
-- One solid piece, flat base on z = 0 (\`lib.trimBase\` if parts dip below).
+- The pot is one solid, flat base on z = 0 (\`lib.trimBase\` if parts dip
+  below); separate pieces are the only other solids.
 - Walls at least 1.6 mm (2.4 to 3 mm is typical), floor at least 1.6 mm.
 - With the "avoid supports" overhang preference (the default), avoid overhangs
   steeper than 45° from vertical: chamfer the undersides of arms, chins,
@@ -413,6 +453,10 @@ see the result, so judge it on its own merits. You can't change it.
 - \`fitted.stl\`: the outer pot as fitted, in the pot frame: millimetres, +Y up,
   with the reference pot's base centre at the origin and its axis along +Y.
   check_fit and render_views measure and draw it exactly as placed.
+- \`pieces/\`, if there: separate pieces printed on their own (eyes that fit
+  into sockets, say), placed the same way. render_views draws them in blue;
+  check_fit measures the pot alone. Check they sit where they should, clear
+  of the nursery pot.
 
 get_state has the reference pot, the goals the fit has to meet, and how much
 the design was scaled from its original size.

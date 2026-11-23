@@ -3,9 +3,9 @@
 // something would otherwise replace them. Going back to an earlier version and changing it makes
 // a new branch from there; the other branches stay, and the user can go back to any of them.
 //
-// A version keeps the placement, goals and triangle count, and the mesh (and for a designed pot
-// its applied script, parts and build) by sha-256 in versions/blobs/, so a mesh many versions
-// share is stored once.
+// A version keeps the placement, goals and triangle count, and the mesh and separate pieces (and
+// for a designed pot its applied script, parts and build) by sha-256 in versions/blobs/, so a mesh
+// many versions share is stored once.
 
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
@@ -16,7 +16,7 @@ import type { Live } from './agent/live.ts';
 import type { Designs } from './design.ts';
 import type { Store } from './store.ts';
 
-type State = Pick<ModelVersion, 'transform' | 'fit' | 'triangleCount' | 'mesh' | 'design'>;
+type State = Pick<ModelVersion, 'transform' | 'fit' | 'triangleCount' | 'mesh' | 'pieces' | 'design'>;
 
 /** JSON with sorted keys, so equal states compare equal whatever order their keys were written in. */
 function canon(v: unknown): string {
@@ -33,8 +33,10 @@ function canon(v: unknown): string {
 
 /** What makes two versions the same pot: not when they were built or what the build reported. */
 const sameState = (a: State, b: State) =>
-  canon([a.transform, a.fit, a.mesh, a.design?.script, a.design?.parts, a.design?.state.params]) ===
-  canon([b.transform, b.fit, b.mesh, b.design?.script, b.design?.parts, b.design?.state.params]);
+  canon([a.transform, a.fit, a.mesh, a.pieces ?? {}, a.design?.script, a.design?.parts, a.design?.state.params]) ===
+  canon([b.transform, b.fit, b.mesh, b.pieces ?? {}, b.design?.script, b.design?.parts, b.design?.state.params]);
+
+const samePieces = (a: Record<string, string> | undefined, b: Record<string, string> | undefined) => canon(a ?? {}) === canon(b ?? {});
 
 /** A short label from the agent's summary: its first sentence, trimmed. */
 export function labelFrom(text: string, fallback: string): string {
@@ -80,6 +82,8 @@ export class Versions {
   /** The model as it is now, as a version keeps it, its files kept among the blobs. */
   private async state(model: PotModel): Promise<State> {
     const mesh = await this.keep(model.id, this.store.meshFile(model.id));
+    const pieces: Record<string, string> = {};
+    for (const p of await this.store.readPieces(model.id)) pieces[p.name] = await this.keep(model.id, this.store.pieceFile(model.id, p.name));
     let design: ModelVersion['design'] = null;
     if (model.design) {
       // As applied: the agent's unapplied edits to design.mjs and parts/ aren't the pot the user sees.
@@ -98,7 +102,7 @@ export class Versions {
       const { params, paramSpec, report, builtFor, builtAt } = model.design;
       design = { script, parts, state: { params, paramSpec, report, builtFor, builtAt } };
     }
-    return { transform: model.transform, fit: model.fit, triangleCount: model.triangleCount, mesh, design };
+    return { transform: model.transform, fit: model.fit, triangleCount: model.triangleCount, mesh, pieces, design };
   }
 
   private async add(model: PotModel, info: Pick<ModelVersion, 'kind' | 'label' | 'checkpointId'>, state: State, parentId: string | null) {
@@ -164,8 +168,13 @@ export class Versions {
       const version = await this.store.getVersion(modelId, id);
       const model = await this.store.getModel(modelId);
       const head = await this.head(model);
-      const meshChanged = head?.mesh !== version.mesh;
-      if (meshChanged) await this.restoreBlob(modelId, version.mesh, this.store.meshFile(modelId));
+      const piecesChanged = !samePieces(head?.pieces, version.pieces);
+      const meshChanged = head?.mesh !== version.mesh || piecesChanged;
+      if (head?.mesh !== version.mesh) await this.restoreBlob(modelId, version.mesh, this.store.meshFile(modelId));
+      if (piecesChanged) {
+        await rm(this.store.piecesDir(modelId), { recursive: true, force: true });
+        for (const [name, sha] of Object.entries(version.pieces ?? {})) await this.restoreBlob(modelId, sha, this.store.pieceFile(modelId, name));
+      }
       if (version.design && model.design) {
         await this.restoreBlob(modelId, version.design.script, this.designs.scriptPath(modelId));
         const parts = this.designs.partsDir(modelId);
@@ -180,6 +189,7 @@ export class Versions {
         triangleCount: version.triangleCount,
         versionId: version.id,
         versionSwitchedAt: new Date().toISOString(),
+        pieces: await this.store.readPieces(modelId),
         ...(version.design && model.design ? { design: { ...version.design.state, buildError: null } } : {}),
       });
       return { model: updated, version, meshChanged };

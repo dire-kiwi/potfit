@@ -24,10 +24,12 @@ export interface ViewsImage {
 }
 
 const BASE = [214, 142, 112];
+/** Separate pieces (from the triangle `pieceFrom` on). */
+const PIECE = [112, 150, 214];
 const BG = [246, 246, 244];
 
 /** positions: triangle soup in the design frame (+Z up, counter-clockwise from outside). */
-export function renderViews(positions: Float32Array, opts: { tile?: number; views?: ViewAngle[]; columns?: number } = {}): ViewsImage {
+export function renderViews(positions: Float32Array, opts: { tile?: number; views?: ViewAngle[]; columns?: number; pieceFrom?: number } = {}): ViewsImage {
   const tile = opts.tile ?? 560;
   const views = opts.views ?? DEFAULT_VIEWS;
   const cols = opts.columns ?? 2;
@@ -36,14 +38,14 @@ export function renderViews(positions: Float32Array, opts: { tile?: number; view
   const width = cols * tile + (cols - 1) * gap, height = rows * tile + (rows - 1) * gap;
   const rgb = new Uint8Array(width * height * 3).fill(200);
   views.forEach((v, i) => {
-    const img = renderView(positions, v, tile);
+    const img = renderView(positions, v, tile, opts.pieceFrom ?? Infinity);
     const ox = (i % cols) * (tile + gap), oy = Math.floor(i / cols) * (tile + gap);
     for (let y = 0; y < tile; y++) rgb.set(img.subarray(y * tile * 3, (y + 1) * tile * 3), ((oy + y) * width + ox) * 3);
   });
   return { png: encodePNG(rgb, width, height), width, height };
 }
 
-function renderView(pos: Float32Array, view: ViewAngle, size: number): Uint8Array {
+function renderView(pos: Float32Array, view: ViewAngle, size: number, pieceFrom: number): Uint8Array {
   const ss = 2;
   const S = size * ss;
   const th = (view.azimuth * Math.PI) / 180, ph = (view.elevation * Math.PI) / 180;
@@ -91,7 +93,8 @@ function renderView(pos: Float32Array, view: ViewAngle, size: number): Uint8Arra
     nx /= l; ny /= l; nz /= l;
     if (nx * f[0] + ny * f[1] + nz * f[2] >= 0) continue; // faces away
     const lit = 0.32 + 0.58 * Math.max(0, nx * key[0] + ny * key[1] + nz * key[2]) + 0.22 * Math.max(0, nx * fill[0] + ny * fill[1] + nz * fill[2]);
-    const c0 = Math.min(255, BASE[0] * lit), c1 = Math.min(255, BASE[1] * lit), c2 = Math.min(255, BASE[2] * lit);
+    const base = t / 3 >= pieceFrom ? PIECE : BASE;
+    const c0 = Math.min(255, base[0] * lit), c1 = Math.min(255, base[1] * lit), c2 = Math.min(255, base[2] * lit);
 
     const x0 = sx[t], y0 = sy[t], x1 = sx[t + 1], y1 = sy[t + 1], x2 = sx[t + 2], y2 = sy[t + 2];
     const d0 = sd[t], d1 = sd[t + 1], d2 = sd[t + 2];

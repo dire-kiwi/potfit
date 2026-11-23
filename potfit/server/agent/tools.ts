@@ -10,8 +10,8 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { defineTool, type Tool, type ToolContext, type ToolOutput } from '@dire-kiwi/agent-threads-node';
 import { checkFit } from '../../shared/fit.ts';
 import { parseSTL, writeBinarySTL } from '../../shared/stl.ts';
-import { validateTransform } from '../../shared/transform.ts';
-import type { AgentRole, Confidence, FitGoals, PotModel, PotTransform, ReferencePot, ReviewResult } from '../../shared/types.ts';
+import { applyMatrix, computeBounds, invertMatrix, transformMatrix, validateTransform, zUpToYUp } from '../../shared/transform.ts';
+import { pieceNameError, type AgentRole, type Confidence, type FitGoals, type MeshEdit, type PotModel, type PotTransform, type ReferencePot, type ReviewResult } from '../../shared/types.ts';
 import type { BlenderOption } from '../blender.ts';
 import { BuildError, DEFAULT_DESIGN_NAME, type Designs } from '../design.ts';
 import type { Store } from '../store.ts';
@@ -249,6 +249,7 @@ export async function toolsFor(deps: ToolDeps): Promise<Record<AgentRole, Tool[]
       const { model, ref } = await load(m.modelId);
       const out: Record<string, unknown> = {
         model: { name: model.name, sourceFile: model.sourceFile, triangles: model.triangleCount },
+        pieces: (model.pieces ?? []).map((p) => ({ name: p.name, triangles: p.triangleCount })),
         nurseryPot: ref ? refState(ref) : null,
         fitGoals: model.fit,
         transform: model.transform,
@@ -355,21 +356,13 @@ export async function toolsFor(deps: ToolDeps): Promise<Record<AgentRole, Tool[]
         await potTool(toolPath, ws, ['render', '--angle', String(angle), '--out', out, ...t]);
         files.push(out);
       }
-      if ((a.sections ?? [0, 90]).length) notes.push('Sections: grey fill is the cut outer pot, red the nursery pot, dashed orange the required clearance, dashed blue the axis, light grid 10 mm.');
+      if ((a.sections ?? [0, 90]).length) notes.push('Sections: grey fill is the cut outer pot, blue fill its separate pieces, red the nursery pot, dashed orange the required clearance, dashed blue the axis, light grid 10 mm.');
       if (a.shaded !== false) {
         const out = `renders/${stamp}-${a.view ? `view-${Math.round(a.view.azimuth)}-${Math.round(a.view.elevation)}` : 'views'}.png`;
         const view = a.view ? ['--view', `${a.view.azimuth},${a.view.elevation}`] : [];
-        if (m.role === 'design') {
-          await potTool(toolPath, ws, ['preview', '--out', out, ...view]);
-        } else {
-          const placed = `renders/.${stamp}-placed.stl`;
-          try {
-            await potTool(toolPath, ws, ['place', '--z-up', '--out', placed, ...t]);
-            await potTool(toolPath, ws, ['preview', '--mesh', placed, '--out', out, ...view]);
-          } finally {
-            await rm(join(ws, placed), { force: true });
-          }
-        }
+        // The pot as placed, Z up, with its separate pieces in blue (a design: as built).
+        const { text } = await potTool(toolPath, ws, ['preview', '--out', out, ...view, ...t]);
+        if (text.includes('separate pieces in blue')) notes.push('Separate pieces are blue.');
         files.push(out);
         notes.push(a.view ? 'The shaded view looks from the azimuth and elevation given.' : 'Shaded views: top left front (from -y), top right right side (from +x), bottom left three-quarter from the front right above, bottom right top down with the front at the bottom.');
       }
@@ -410,56 +403,118 @@ export async function toolsFor(deps: ToolDeps): Promise<Record<AgentRole, Tool[]
   const exportPlaced = defineTool<{ transform?: PotTransform; out?: string }>({
     name: 'export_placed_mesh',
     description:
-      "Writes the pot as a placement puts it, turned Z up for Blender (mm, the nursery pot's base centre at the origin, its axis along +Z). Default: the current placement, to placed.stl.",
+      "Writes the pot as a placement puts it, turned Z up for Blender (mm, the nursery pot's base centre at the origin, its axis along +Z), and each of the model's separate pieces beside it as <out>-<piece>.stl, placed the same way. Default: the current placement, to placed.stl.",
     input: { type: 'object', additionalProperties: false, properties: { transform: TRANSFORM, out: { type: 'string', description: 'File to write (default placed.stl)' } } },
     run: async (a, ctx) => {
       const m = meta(ctx, ['fit']);
       const ws = await workspace(m);
       const out = relative(ws, inWorkspace(ws, a.out ?? 'placed.stl', 'out'));
-      return (await potTool(toolPath, ws, ['place', '--z-up', '--out', out, ...transformArg(a.transform)])).text.replace(/after editing, turn it back with:.*$/m, 'after editing it, give it to apply_mesh_edit with the same transform.');
+      const t = transformArg(a.transform);
+      const texts = [(await potTool(toolPath, ws, ['place', '--z-up', '--out', out, ...t])).text.replace(/after editing, turn it back with:.*$/m, 'after editing it, give it to apply_mesh_edit with the same transform.')];
+      for (const p of (await store.getModel(m.modelId)).pieces ?? []) {
+        const file = `${out.replace(/\.stl$/i, '')}-${p.name}.stl`;
+        texts.push((await potTool(toolPath, ws, ['place', '--z-up', '--piece', p.name, '--out', file, ...t])).text.split('\n')[0]);
+      }
+      return texts.join('\n');
     },
   });
 
-  const applyMeshEdit = defineTool<{ file: string; transform: PotTransform; fit?: FitGoals; summary: string; warnings: string[]; confidence: Confidence }>({
+  const applyMeshEdit = defineTool<{ file?: string; pieces?: { name: string; file: string }[]; removePieces?: string[]; transform: PotTransform; fit?: FitGoals; summary: string; warnings: string[]; confidence: Confidence }>({
     name: 'apply_mesh_edit',
     description:
-      "Makes a mesh you edited in Blender the model's mesh. `file` is the edited Z-up placed STL; `transform` the placement you exported it with. The server turns it back into raw coordinates, places it where you edited it and measures it; the user can revert it.",
+      "Makes meshes you edited in Blender the model's: `file` the edited pot, `pieces` separate pieces to add or replace (each printed on its own, like eyes that fit into sockets), `removePieces` pieces to drop. Each file is a Z-up placed STL, in the frame export_placed_mesh writes; `transform` is the placement you exported with. The server turns them back into raw coordinates, places them where you edited them and measures the pot; the user can revert it.",
     input: {
       type: 'object',
       additionalProperties: false,
-      required: ['file', 'transform', 'summary', 'warnings', 'confidence'],
-      properties: { file: { type: 'string' }, transform: TRANSFORM, fit: { ...GOALS, description: 'The goals the result meets (default: the current ones)' }, ...REPORT },
+      required: ['transform', 'summary', 'warnings', 'confidence'],
+      properties: {
+        file: { type: 'string', description: 'The edited pot (omit to leave the pot as it is)' },
+        pieces: {
+          type: 'array',
+          description: 'Separate pieces to add or replace, by name',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['name', 'file'],
+            properties: { name: { type: 'string', description: 'Lower-case letters, digits and dashes, like "eyes" or "left-ear"' }, file: { type: 'string' } },
+          },
+        },
+        removePieces: { type: 'array', items: { type: 'string' }, description: 'Pieces to remove, by name' },
+        transform: TRANSFORM,
+        fit: { ...GOALS, description: 'The goals the result meets (default: the current ones)' },
+        ...REPORT,
+      },
     },
     run: async (a, ctx): Promise<ToolOutput> => {
       const m = meta(ctx, ['fit']);
       const ws = await workspace(m);
-      const file = inWorkspace(ws, a.file, 'file');
-      if (!existsSync(file)) return { text: `${a.file} does not exist`, isError: true };
+      const pieces = a.pieces ?? [];
+      const removed = (a.removePieces ?? []).map(String);
+      if (!a.file && pieces.length === 0 && removed.length === 0) return { text: 'Give the edited pot as `file`, or pieces to add, replace or remove.', isError: true };
+      const terr = validateTransform(a.transform);
+      if (terr) return { text: `Invalid transform: ${terr}`, isError: true };
+      const file = a.file ? inWorkspace(ws, a.file, 'file') : null;
+      if (file && !existsSync(file)) return { text: `${a.file} does not exist`, isError: true };
       const goals = a.fit === undefined ? null : parseGoals(a.fit);
       if (a.fit !== undefined && !goals) return { text: 'Invalid fit goals', isError: true };
+      const { model: current } = await load(m.modelId);
+      const existing = new Set((current.pieces ?? []).map((p) => p.name));
+      const seen = new Set<string>();
+      for (const p of pieces) {
+        const err = pieceNameError(p?.name);
+        if (err) return { text: `Piece ${JSON.stringify(p?.name)}: ${err}`, isError: true };
+        if (seen.has(p.name)) return { text: `The piece ${p.name} is given twice`, isError: true };
+        seen.add(p.name);
+        if (!existsSync(inWorkspace(ws, p.file, `pieces.${p.name}.file`))) return { text: `${p.file} does not exist`, isError: true };
+      }
+      for (const name of removed) {
+        if (!existing.has(name)) return { text: `There is no piece ${name} to remove${existing.size ? ` (pieces: ${[...existing].join(', ')})` : ''}`, isError: true };
+        if (seen.has(name)) return { text: `The piece ${name} is both replaced and removed`, isError: true };
+      }
       const tmp = `.edited-${randomUUID().slice(0, 8)}.stl`;
       try {
-        const { json } = await potTool(toolPath, ws, ['unplace', '--z-up', '--in', relative(ws, file), '--out', tmp, ...transformArg(a.transform)]);
-        const edited = parseSTL(await readFile(join(ws, tmp)));
-        if (edited.length === 0) return { text: `${a.file} has no triangles`, isError: true };
-        if (!edited.every(Number.isFinite)) return { text: `${a.file} has invalid coordinates`, isError: true };
-        const placeIt = json.transform as PotTransform;
+        // Pieces share the pot's raw coordinates: back through the placement they were edited at.
+        const before = parseSTL(await readFile(store.meshFile(current.id)));
+        const toRaw = invertMatrix(transformMatrix(a.transform, computeBounds(before)));
+        const changes: Record<string, Uint8Array | null> = {};
+        for (const p of pieces) {
+          const placed = parseSTL(await readFile(inWorkspace(ws, p.file, 'file')));
+          if (placed.length === 0) return { text: `${p.file} has no triangles`, isError: true };
+          if (!placed.every(Number.isFinite)) return { text: `${p.file} has invalid coordinates`, isError: true };
+          changes[p.name] = writeBinarySTL(applyMatrix(zUpToYUp(placed), toRaw), `potfit piece: ${p.name}`);
+        }
+        for (const name of removed) changes[name] = null;
+        let edited = before;
+        let placeIt = a.transform;
+        if (file) {
+          const { json } = await potTool(toolPath, ws, ['unplace', '--z-up', '--in', relative(ws, file), '--out', tmp, ...transformArg(a.transform)]);
+          edited = parseSTL(await readFile(join(ws, tmp)));
+          if (edited.length === 0) return { text: `${a.file} has no triangles`, isError: true };
+          if (!edited.every(Number.isFinite)) return { text: `${a.file} has invalid coordinates`, isError: true };
+          placeIt = json.transform as PotTransform;
+        }
         const { model, ref } = await load(m.modelId);
         const checkpoint = await checkpoints.begin(model, { kind: 'mesh-edit', threadId: ctx.threadId, toolCallId: ctx.toolCallId ?? null });
-        const mesh = store.meshFile(model.id);
-        await writeFile(`${mesh}.tmp`, writeBinarySTL(edited, 'potfit: edited by the agent'));
-        await rename(`${mesh}.tmp`, mesh);
+        if (file) {
+          const mesh = store.meshFile(model.id);
+          await writeFile(`${mesh}.tmp`, writeBinarySTL(edited, 'potfit: edited by the agent'));
+          await rename(`${mesh}.tmp`, mesh);
+        }
+        if (Object.keys(changes).length) await store.writePieces(model.id, changes);
         const fit = { ...model.fit, ...goals };
         const metrics = ref ? checkFit(edited, placeIt, ref, fit) : null;
-        const meshEdit = { trianglesBefore: model.triangleCount, trianglesAfter: edited.length / 9 };
+        const meshEdit: MeshEdit = { trianglesBefore: model.triangleCount, trianglesAfter: edited.length / 9, piecesSet: pieces.map((p) => p.name), piecesRemoved: removed, ...(file ? {} : { potUnchanged: true }) };
         await store.updateModel(model.id, { transform: placeIt, fit, triangleCount: meshEdit.trianglesAfter });
         const { checkpoint: saved, model: next } = await checkpoints.save({ ...checkpoint, transform: placeIt, fit, meshEdit, summary: String(a.summary ?? ''), warnings: strings(a.warnings), confidence: confidenceOf(a.confidence), metrics });
         live.emit(model.id, { type: 'model', model: next, meshChanged: true });
         live.emit(model.id, { type: 'checkpoint', checkpoint: saved });
-        return reply(
-          `The edited mesh (${meshEdit.trianglesAfter} triangles, was ${meshEdit.trianglesBefore}) is now the model's, placed by ${JSON.stringify(placeIt)} (checkpoint ${saved.id}). mesh.stl is the edited mesh from now on. Server's measurements: ${metrics ? metricsLine(metrics) : 'none'}.`,
-          { checkpoint: saved },
-        );
+        const what = [
+          file ? `The edited mesh (${meshEdit.trianglesAfter} triangles, was ${meshEdit.trianglesBefore}) is now the model's; mesh.stl is the edited mesh from now on.` : 'The pot is as it was.',
+          pieces.length ? `Pieces ${pieces.map((p) => p.name).join(', ')} ${pieces.length === 1 ? 'is' : 'are'} now the model's, printed separately.` : '',
+          removed.length ? `Removed ${removed.join(', ')}.` : '',
+          `The model's pieces: ${(next.pieces ?? []).map((p) => p.name).join(', ') || 'none'}.`,
+        ].filter(Boolean);
+        return reply(`${what.join(' ')} Placed by ${JSON.stringify(placeIt)} (checkpoint ${saved.id}). Server's measurements of the pot: ${metrics ? metricsLine(metrics) : 'none'}.`, { checkpoint: saved });
       } finally {
         await rm(join(ws, tmp), { force: true });
       }

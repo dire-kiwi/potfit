@@ -10,6 +10,8 @@ export interface SectionImageOptions {
   /** Required radial clearance, drawn as a dashed envelope. */
   radialClear?: number;
   width?: number;
+  /** The model's separate pieces, placed like `world`, drawn in blue. */
+  pieces?: Float32Array | null;
 }
 
 export interface SectionImage {
@@ -124,10 +126,13 @@ export function verticalSection(world: Float32Array, angle = 0): Float64Array {
 
 export function renderSection(world: Float32Array, ref: ReferenceDims | null, opts: SectionImageOptions = {}): SectionImage {
   const segs = verticalSection(world, opts.angle ?? 0);
+  const pieceSegs = opts.pieces?.length ? verticalSection(opts.pieces, opts.angle ?? 0) : new Float64Array(0);
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  for (let i = 0; i < segs.length; i += 2) {
-    minX = Math.min(minX, segs[i]); maxX = Math.max(maxX, segs[i]);
-    minY = Math.min(minY, segs[i + 1]); maxY = Math.max(maxY, segs[i + 1]);
+  for (const ss of [segs, pieceSegs]) {
+    for (let i = 0; i < ss.length; i += 2) {
+      minX = Math.min(minX, ss[i]); maxX = Math.max(maxX, ss[i]);
+      minY = Math.min(minY, ss[i + 1]); maxY = Math.max(maxY, ss[i + 1]);
+    }
   }
   const f = ref ? frustumOf(ref) : null;
   if (f) {
@@ -158,19 +163,23 @@ export function renderSection(world: Float32Array, ref: ReferenceDims | null, op
   }
 
   // Fill the cut faces with an even-odd scanline fill, then outline them.
-  for (let row = 0; row < height; row++) {
-    const yw = maxY - (row + 0.5) / pxPerMm;
-    const xs: number[] = [];
-    for (let i = 0; i < segs.length; i += 4) {
-      const y1 = segs[i + 1], y2 = segs[i + 3];
-      if (y1 > yw !== y2 > yw) xs.push(segs[i] + ((yw - y1) * (segs[i + 2] - segs[i])) / (y2 - y1));
+  const fill = (segs: Float64Array, colour: RGB, outline: RGB) => {
+    for (let row = 0; row < height; row++) {
+      const yw = maxY - (row + 0.5) / pxPerMm;
+      const xs: number[] = [];
+      for (let i = 0; i < segs.length; i += 4) {
+        const y1 = segs[i + 1], y2 = segs[i + 3];
+        if (y1 > yw !== y2 > yw) xs.push(segs[i] + ((yw - y1) * (segs[i + 2] - segs[i])) / (y2 - y1));
+      }
+      xs.sort((a, b) => a - b);
+      for (let k = 0; k + 1 < xs.length; k += 2) {
+        for (let col = Math.ceil(px(xs[k]) - 0.5); col <= Math.floor(px(xs[k + 1]) - 0.5); col++) cv.set(col, row, colour);
+      }
     }
-    xs.sort((a, b) => a - b);
-    for (let k = 0; k + 1 < xs.length; k += 2) {
-      for (let col = Math.ceil(px(xs[k]) - 0.5); col <= Math.floor(px(xs[k + 1]) - 0.5); col++) cv.set(col, row, [120, 120, 128]);
-    }
-  }
-  for (let i = 0; i < segs.length; i += 4) cv.line(px(segs[i]), py(segs[i + 1]), px(segs[i + 2]), py(segs[i + 3]), [20, 20, 24], 2);
+    for (let i = 0; i < segs.length; i += 4) cv.line(px(segs[i]), py(segs[i + 1]), px(segs[i + 2]), py(segs[i + 3]), outline, 2);
+  };
+  fill(segs, [120, 120, 128], [20, 20, 24]);
+  fill(pieceSegs, [110, 150, 215], [20, 40, 90]);
 
   if (f) {
     const red: RGB = [220, 30, 40];

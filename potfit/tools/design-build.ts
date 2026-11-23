@@ -7,7 +7,7 @@ import Module, { type ManifoldToplevel } from 'manifold-3d';
 import { pathToFileURL } from 'node:url';
 import { checkFit, placeDesign } from '../shared/fit.ts';
 import { computeBounds } from '../shared/transform.ts';
-import type { DesignParam, DesignReport, OverhangSpot, ParamValues } from '../shared/types.ts';
+import { pieceNameError, type DesignParam, type DesignReport, type OverhangSpot, type ParamValues, type PieceReport } from '../shared/types.ts';
 import { createContext, normaliseParams, resolveParams, type DesignInput, type Manifold } from './potlib.ts';
 
 let wasm: Promise<ManifoldToplevel> | null = null;
@@ -22,6 +22,8 @@ function loadWasm(): Promise<ManifoldToplevel> {
 export interface BuildOutput {
   /** Triangle soup in the design frame (+Z up), ready to write as STL. */
   positions: Float32Array;
+  /** The separate pieces, by name, likewise. */
+  pieces: Record<string, Float32Array>;
   report: DesignReport;
   paramSpec: Record<string, DesignParam>;
   params: ParamValues;
@@ -83,11 +85,26 @@ export async function buildDesign(scriptPath: string, input: DesignInput): Promi
   const { context, notes, asManifold } = createContext(w, input, params);
 
   let result: Manifold;
+  const pieceSolids: [string, Manifold][] = [];
+  const isManifold = (v: unknown): v is Manifold => !!v && typeof (v as { getMesh?: unknown }).getMesh === 'function';
   try {
     const out = await fn(context);
     if (!out) throw new Error('the design function returned nothing; return the finished Manifold');
-    result = asManifold(out as Manifold | Manifold[]);
-    if (typeof (result as { getMesh?: unknown }).getMesh !== 'function') throw new Error('the design function must return a Manifold');
+    // { pot, pieces: { eyes: ... } } is the pot and the pieces printed separately.
+    const withPieces = !Array.isArray(out) && !isManifold(out) && typeof out === 'object' && 'pot' in out;
+    result = asManifold((withPieces ? (out as { pot: Manifold | Manifold[] }).pot : out) as Manifold | Manifold[]);
+    if (!isManifold(result)) throw new Error('the design function must return a Manifold, or { pot, pieces: { name: Manifold } }');
+    if (withPieces) {
+      const pieces = (out as { pieces?: unknown }).pieces ?? {};
+      if (!pieces || typeof pieces !== 'object' || Array.isArray(pieces)) throw new Error('pieces must be an object of named Manifolds, like { eyes: ... }');
+      for (const [name, v] of Object.entries(pieces)) {
+        const err = pieceNameError(name);
+        if (err) throw new Error(`pieces.${name}: ${err}`);
+        const m = asManifold(v as Manifold | Manifold[]);
+        if (!isManifold(m)) throw new Error(`pieces.${name} must be a Manifold`);
+        pieceSolids.push([name, m]);
+      }
+    }
   } catch (e) {
     const err = e as Error;
     throw new Error(`The design script failed: ${err.message ?? err}${err instanceof Error ? locate(err, url) : ''}`);
@@ -96,16 +113,26 @@ export async function buildDesign(scriptPath: string, input: DesignInput): Promi
   if (status !== 'NoError') throw new Error(`The design is not a valid solid (${status})`);
   if (result.isEmpty()) throw new Error('The design is empty');
 
-  const mesh = result.getMesh();
-  const { numProp, vertProperties: vp, triVerts } = mesh;
-  const positions = new Float32Array(triVerts.length * 3);
-  for (let i = 0; i < triVerts.length; i++) {
-    const v = triVerts[i] * numProp;
-    positions[i * 3] = vp[v];
-    positions[i * 3 + 1] = vp[v + 1];
-    positions[i * 3 + 2] = vp[v + 2];
-  }
+  const positions = soup(result);
   const b = computeBounds(positions);
+  const pieces: Record<string, Float32Array> = {};
+  const pieceReports: PieceReport[] = [];
+  for (const [name, m] of pieceSolids) {
+    const status = m.status();
+    if (status !== 'NoError') throw new Error(`The piece "${name}" is not a valid solid (${status})`);
+    if (m.isEmpty()) throw new Error(`The piece "${name}" is empty`);
+    const p = soup(m);
+    const pb = computeBounds(p);
+    pieces[name] = p;
+    pieceReports.push({
+      name,
+      triangles: p.length / 9,
+      size: { x: pb.max.x - pb.min.x, y: pb.max.y - pb.min.y, z: pb.max.z - pb.min.z },
+      volume: m.volume() / 1000,
+      components: m.decompose().length,
+      overlap: result.intersect(m).volume(),
+    });
+  }
   const components = result.decompose().length;
   const oh = overhangs(positions, b.min.z);
   const fitSettings = { referenceId: null, scaleMode: 'uniform' as const, ...input.fit };
@@ -113,7 +140,7 @@ export async function buildDesign(scriptPath: string, input: DesignInput): Promi
   const metrics = checkFit(positions, placement, input.reference, fitSettings, b);
 
   const warnings: string[] = [];
-  if (components > 1) warnings.push(`The design is ${components} separate pieces; something is floating or only touching. Join every part to the pot.`);
+  if (components > 1) warnings.push(`The pot is ${components} separate solids; something is floating or only touching. Join every part to the pot, or return what is meant to print separately in pieces.`);
   if (Math.abs(b.min.z) > 0.01) warnings.push(`The lowest point is at z = ${b.min.z.toFixed(2)}; the base should sit on z = 0.`);
   if (oh.area > 25) warnings.push(`About ${Math.round(oh.area)} mm² overhangs more than 45° and would need supports (see overhangs).`);
   if (metrics.interferes) warnings.push('The nursery pot passes through the design.');
@@ -126,11 +153,15 @@ export async function buildDesign(scriptPath: string, input: DesignInput): Promi
   }
   if (metrics.wallThickness && metrics.wallThickness.min < 1.2) warnings.push(`The thinnest wall is ${metrics.wallThickness.min.toFixed(2)} mm; aim for at least 1.6 mm.`);
   if (metrics.floorThickness !== null && metrics.floorThickness < 1) warnings.push(`The floor is ${metrics.floorThickness.toFixed(2)} mm thick.`);
+  for (const p of pieceReports) {
+    if (p.overlap > 0.5) warnings.push(`The piece "${p.name}" overlaps the pot by ${p.overlap.toFixed(1)} mm³; it won't fit once printed. Cut its socket from the pot with a gap of 0.2 to 0.4 mm.`);
+  }
   const size = { x: b.max.x - b.min.x, y: b.max.y - b.min.y, z: b.max.z - b.min.z };
   if (Math.max(size.x, size.y, size.z) > 250) warnings.push(`At ${Math.round(Math.max(size.x, size.y, size.z))} mm it may not fit a typical printer.`);
 
   return {
     positions,
+    pieces,
     paramSpec,
     params,
     report: {
@@ -146,8 +177,22 @@ export async function buildDesign(scriptPath: string, input: DesignInput): Promi
       notes,
       warnings,
       buildMs: Math.round(performance.now() - started),
+      pieces: pieceReports,
     },
   };
+}
+
+/** A Manifold as a triangle soup. */
+function soup(m: Manifold): Float32Array {
+  const { numProp, vertProperties: vp, triVerts } = m.getMesh();
+  const positions = new Float32Array(triVerts.length * 3);
+  for (let i = 0; i < triVerts.length; i++) {
+    const v = triVerts[i] * numProp;
+    positions[i * 3] = vp[v];
+    positions[i * 3 + 1] = vp[v + 1];
+    positions[i * 3 + 2] = vp[v + 2];
+  }
+  return positions;
 }
 
 const f = (v: number | null | undefined, d = 1) => (v === null || v === undefined ? 'n/a' : Number.isFinite(v) ? v.toFixed(d) : String(v));
@@ -157,12 +202,18 @@ export function formatReport(out: BuildOutput): string {
   const r = out.report;
   const m = r.metrics;
   const lines = [
-    `built in ${r.buildMs} ms: ${r.triangles} triangles, ${r.components} piece${r.components === 1 ? '' : 's'}`,
+    `built in ${r.buildMs} ms: ${r.triangles} triangles, ${r.components === 1 ? 'one solid' : `${r.components} separate solids`}`,
     `size                  ${f(r.size.x)} x ${f(r.size.y)} mm, ${f(r.size.z)} mm tall (lowest z ${f(r.minZ, 2)})`,
     `material              ${f(r.volume, 1)} cm³ (about ${f(r.volume * 1.24, 0)} g of PLA if solid)`,
     `overhang over 45°     ${f(r.overhangArea, 0)} mm²${r.overhangs.length ? '' : ' (none worth supporting)'}`,
     ...r.overhangs.map((s) => `  ${f(s.area, 0).padStart(6)} mm² at z ${f(s.zMin)}..${f(s.zMax)}, ${s.side}`),
   ];
+  if (r.pieces?.length) {
+    lines.push('', 'pieces, printed separately (sizes as placed on the pot)');
+    for (const p of r.pieces) {
+      lines.push(`  ${p.name.padEnd(16)} ${f(p.size.x)} x ${f(p.size.y)} x ${f(p.size.z)} mm, ${f(p.volume, 2)} cm³, ${p.triangles} triangles, ${p.components} solid${p.components === 1 ? '' : 's'}${p.overlap > 0.5 ? `, OVERLAPS THE POT by ${f(p.overlap)} mm³` : ''}`);
+    }
+  }
   if (m) {
     lines.push(
       `nursery pot           rim ${f(m.topOffset, 2)} mm above the design's rim, gap under it ${f(m.floorGap, 2)} mm`,

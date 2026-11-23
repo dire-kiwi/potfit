@@ -78,8 +78,21 @@ function ResultRow({ call }: ToolRowProps) {
       </div>
       {cp.summary && <p className="result-text"><CText field="summary" text={cp.summary} /></p>}
       {cp.metrics && <MetricsLine m={cp.metrics} />}
-      {cp.meshEdit && <p className="muted small">{cp.meshEdit.trianglesBefore.toLocaleString()} → {cp.meshEdit.trianglesAfter.toLocaleString()} triangles</p>}
-      {report && <p className="muted small">{report.triangles.toLocaleString()} triangles · {report.components} piece{report.components === 1 ? '' : 's'} · overhangs {report.overhangArea.toFixed(0)} mm²</p>}
+      {cp.meshEdit && (
+        <p className="muted small">
+          {cp.meshEdit.potUnchanged
+            ? 'Pot unchanged'
+            : `${cp.meshEdit.trianglesBefore.toLocaleString()} → ${cp.meshEdit.trianglesAfter.toLocaleString()} triangles`}
+          {cp.meshEdit.piecesSet?.length ? ` · separate pieces: ${cp.meshEdit.piecesSet.join(', ')}` : ''}
+          {cp.meshEdit.piecesRemoved?.length ? ` · removed ${cp.meshEdit.piecesRemoved.join(', ')}` : ''}
+        </p>
+      )}
+      {report && (
+        <p className="muted small">
+          {report.triangles.toLocaleString()} triangles · {report.components === 1 ? 'one solid' : `${report.components} solids`} · overhangs {report.overhangArea.toFixed(0)} mm²
+          {report.pieces?.length ? ` · separate pieces: ${report.pieces.map((p) => p.name).join(', ')}` : ''}
+        </p>
+      )}
       {cp.warnings.length > 0 && <ul className="warnings">{cp.warnings.map((w, i) => <li key={w}><CText field={`warning.${i}`} text={w} /></li>)}</ul>}
       <div className="result-actions">
         <button className="small" disabled={busy || reverted || !!ctx.lockedBy} title={version ? 'Go back to the version before this change; your next change branches from it' : 'Put the model back as it was before this change'}
@@ -161,7 +174,12 @@ function BuildBody({ call }: ToolBodyProps) {
       <div className="metric-chips">
         <span>{report.size.x.toFixed(1)} × {report.size.y.toFixed(1)} × {report.size.z.toFixed(1)} mm</span>
         <span>{report.triangles.toLocaleString()} triangles</span>
-        <span className={report.components === 1 ? 'ok' : 'bad'}>{report.components} piece{report.components === 1 ? '' : 's'}</span>
+        <span className={report.components === 1 ? 'ok' : 'bad'}>{report.components === 1 ? 'one solid' : `${report.components} solids`}</span>
+        {report.pieces?.map((p) => (
+          <span key={p.name} className={p.overlap > 0.5 ? 'bad' : ''} title="A separate piece, printed on its own">
+            + {p.name}{p.overlap > 0.5 ? ' (overlaps)' : ''}
+          </span>
+        ))}
         <span className={report.overhangArea > 25 ? 'warn' : 'ok'}>overhangs {report.overhangArea.toFixed(0)} mm²</span>
       </div>
       {report.metrics && <MetricsLine m={report.metrics} />}

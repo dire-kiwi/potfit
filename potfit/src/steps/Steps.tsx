@@ -229,9 +229,20 @@ export function ReviewStep(props: {
   );
 }
 
-export function ExportStep(props: { model: PotModel; references: ReferencePot[]; metrics: FitMetrics | null; metricsError: string | null; exportUrl: string; locked: boolean }) {
+export function ExportStep(props: {
+  model: PotModel;
+  references: ReferencePot[];
+  metrics: FitMetrics | null;
+  metricsError: string | null;
+  exportUrl: string;
+  pieceExportUrl(name: string): string;
+  hiddenPieces: string[];
+  onHidePiece(name: string, hidden: boolean): void;
+  locked: boolean;
+}) {
   const { metrics, model } = props;
   const report = model.design?.report;
+  const pieces = model.pieces ?? [];
   const checks = metrics
     ? [
         { ok: !metrics.interferes, warn: !metrics.clearanceOk, text: metrics.interferes ? 'The nursery pot passes through the wall' : metrics.clearanceOk ? 'The nursery pot fits with the clearance' : 'Tighter than the clearance' },
@@ -240,10 +251,25 @@ export function ExportStep(props: { model: PotModel; references: ReferencePot[];
           warn: (metrics.wallThickness?.min ?? Infinity) < 1.2,
           text: `Thinnest wall ${mm(metrics.wallThickness?.min)}, floor ${mm(metrics.floorThickness)}`,
         },
-        ...(report ? [{ ok: report.components === 1, warn: false, text: report.components === 1 ? 'One solid piece' : `${report.components} separate pieces` }] : []),
+        ...(report ? [{ ok: report.components === 1, warn: false, text: report.components === 1 ? 'The pot is one solid' : `The pot is ${report.components} separate solids` }] : []),
         ...(report ? [{ ok: true, warn: report.overhangArea > 25, text: `Overhangs over 45°: ${report.overhangArea.toFixed(0)} mm²${model.avoidOverhangs === false ? ' (supports accepted)' : ''}` }] : []),
+        ...(report?.pieces ?? []).filter((p) => p.overlap > 0.5).map((p) => ({ ok: false, warn: false, text: `The ${p.name} piece overlaps the pot by ${p.overlap.toFixed(1)} mm³` })),
       ]
     : [];
+  const exportAll = () => {
+    // One download after another; a browser may ask once whether to allow several.
+    const urls = [props.exportUrl, ...pieces.map((p) => props.pieceExportUrl(p.name))];
+    urls.forEach((url, i) =>
+      setTimeout(() => {
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = '';
+        document.body.append(a);
+        a.click();
+        a.remove();
+      }, i * 400),
+    );
+  };
   return (
     <>
       {checks.length > 0 && (
@@ -256,9 +282,31 @@ export function ExportStep(props: { model: PotModel; references: ReferencePot[];
         </ul>
       )}
       <a className={`button primary big ${props.locked ? 'disabled' : ''}`} href={props.exportUrl} download>
-        ⤓ Export STL
+        ⤓ Export {pieces.length ? 'the pot' : 'STL'}
       </a>
       <p className="hint">Z up, standing on z = 0, in millimetres: ready for a slicer.</p>
+      {pieces.length > 0 && (
+        <Section title={`Separate pieces (${pieces.length})`}>
+          <ul className="pieces">
+            {pieces.map((p) => (
+              <li key={p.name}>
+                <label className="inline" title="Show it in the views">
+                  <input type="checkbox" checked={!props.hiddenPieces.includes(p.name)} onChange={(e) => props.onHidePiece(p.name, !e.target.checked)} />
+                  <span className="sw piece" /> {p.name}
+                </label>
+                <span className="muted small">{p.triangleCount.toLocaleString()} triangles</span>
+                <a className={`button small ${props.locked ? 'disabled' : ''}`} href={props.pieceExportUrl(p.name)} download>
+                  ⤓ STL
+                </a>
+              </li>
+            ))}
+          </ul>
+          <button className="small" disabled={props.locked} onClick={exportAll}>
+            ⤓ Export all {pieces.length + 1} STLs
+          </button>
+          <p className="hint">Each piece prints on its own: scaled with the pot, Z up, centred and standing on z = 0. Lay it the way it prints best in your slicer.</p>
+        </Section>
+      )}
       <Section title="Measurements">
         <Measurements model={model} references={props.references} metrics={metrics} metricsError={props.metricsError} />
       </Section>

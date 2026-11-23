@@ -92,8 +92,16 @@ function ReportSummary({ report, avoidOverhangs }: { report: DesignReport; avoid
             </small>
           )}
         </dd>
-        <dt>Pieces</dt>
-        <dd className={report.components === 1 ? 'ok' : 'bad'}>{report.components === 1 ? 'One solid piece' : `${report.components} separate pieces`}</dd>
+        <dt>Solid</dt>
+        <dd className={report.components === 1 ? 'ok' : 'bad'}>{report.components === 1 ? 'The pot is one solid' : `The pot is ${report.components} separate solids`}</dd>
+        {(report.pieces?.length ?? 0) > 0 && (
+          <>
+            <dt>Pieces</dt>
+            <dd className={report.pieces!.some((p) => p.overlap > 0.5) ? 'bad' : 'ok'}>
+              {report.pieces!.map((p) => `${p.name}${p.overlap > 0.5 ? ' (overlaps the pot)' : ''}`).join(', ')}, printed separately
+            </dd>
+          </>
+        )}
       </dl>
       {report.notes.length > 0 && (
         <ul className="notes">
