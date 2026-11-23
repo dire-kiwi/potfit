@@ -50,6 +50,8 @@ export function App() {
   const [selectedId, setSelectedId] = useState<string | null>(() => localStorage.getItem(LAST_MODEL_KEY));
   const [model, setModel] = useState<PotModel | null>(null);
   const [positions, setPositions] = useState<Float32Array | null>(null);
+  // The model's separate pieces not shown in the views, by name.
+  const [hiddenPieces, setHiddenPieces] = useState<string[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [metrics, setMetrics] = useState<FitMetrics | null>(null);
@@ -213,6 +215,7 @@ export function App() {
   useEffect(() => viewer.current?.setScaleLock(scaleLock), [scaleLock]);
   useEffect(() => viewer.current?.setSectionAngle(sectionAngle), [sectionAngle]);
   useEffect(() => viewer.current?.setCutaway(cutaway), [cutaway]);
+  useEffect(() => viewer.current?.setHiddenPieces(hiddenPieces), [hiddenPieces]);
   useEffect(() => viewer.current?.setEditable(!locked), [locked]);
   useEffect(() => viewer.current?.setTransform(model?.transform ?? null), [model?.transform]);
   useEffect(() => {
@@ -238,19 +241,19 @@ export function App() {
     return () => geometry.dispose();
   }, [geometry]);
 
-  /** Show a rebuilt model: its new mesh and placement. Undo history is for the old mesh, so it goes. */
+  /** Show a rebuilt model: its new mesh, pieces and placement. Undo history is for the old mesh, so it goes. */
   const showRebuilt = useCallback(
     async (m: PotModel) => {
       setModels((ms) => ms.map((x) => (x.id === m.id ? m : x)));
       if (modelRef.current?.id !== m.id) return;
-      const res = await fetch(api.meshUrl(m.id));
-      if (!res.ok) throw new Error(`Could not load the mesh (${res.status})`);
-      const pos = parseSTL(await res.arrayBuffer());
+      const [buf, pieces] = await Promise.all([fetchSTL(api.meshUrl(m.id), 'the mesh'), loadPieces(m)]);
+      const pos = parseSTL(buf);
       if (modelRef.current?.id !== m.id) return;
       meshReady.current = geometry.load(pos);
       setModel(m);
       setPositions(pos);
       viewer.current?.setMesh(pos);
+      viewer.current?.setPieces(pieces);
       viewer.current?.setTransform(m.transform);
       history.current = { past: [], future: [] };
       bumpHistory();
@@ -308,9 +311,11 @@ export function App() {
     setVersions([]);
     setLoop(null);
     setDockThread(null);
+    setHiddenPieces([]);
     history.current = { past: [], future: [] };
     bumpHistory();
     viewer.current?.setMesh(null);
+    viewer.current?.setPieces([]);
     if (!selectedId) {
       setStep('model');
       return;
@@ -325,15 +330,13 @@ export function App() {
         setBusy('Loading model…');
         const [{ model: m, threads: ts }, buf, cps, rvs, lp, vs] = await Promise.all([
           api.model(selectedId),
-          fetch(api.meshUrl(selectedId)).then((r) => {
-            if (!r.ok) throw new Error(`Could not load the mesh (${r.status})`);
-            return r.arrayBuffer();
-          }),
+          fetchSTL(api.meshUrl(selectedId), 'the mesh'),
           api.checkpoints(selectedId),
           api.reviews(selectedId),
           api.screenshotReview(selectedId),
           api.versions(selectedId),
         ]);
+        const pieces = await loadPieces(m);
         if (cancelled) return;
         const pos = parseSTL(buf);
         meshReady.current = geometry.load(pos);
@@ -346,6 +349,7 @@ export function App() {
         setLoop(lp);
         setStep(!m.fit.referenceId ? 'pot' : m.design ? 'model' : 'fit');
         viewer.current?.setMesh(pos);
+        viewer.current?.setPieces(pieces);
         viewer.current?.setTransform(m.transform);
         frameOnLoad.current = true;
       } catch (e) {
@@ -788,7 +792,19 @@ export function App() {
           />
         ) : null;
       case 'export':
-        return model ? <ExportStep model={model} references={references} metrics={metrics} metricsError={metricsError} exportUrl={api.exportUrl(model.id)} locked={locked} /> : null;
+        return model ? (
+          <ExportStep
+            model={model}
+            references={references}
+            metrics={metrics}
+            metricsError={metricsError}
+            exportUrl={api.exportUrl(model.id)}
+            pieceExportUrl={(name) => api.pieceExportUrl(model.id, name)}
+            hiddenPieces={hiddenPieces}
+            onHidePiece={(name, hidden) => setHiddenPieces((hs) => (hidden ? [...hs.filter((h) => h !== name), name] : hs.filter((h) => h !== name)))}
+            locked={locked}
+          />
+        ) : null;
     }
   })();
 
@@ -875,7 +891,7 @@ export function App() {
             <div className="view-label">Section · {sectionAngle ? `${sectionAngle}°` : 'side on'}</div>
             <div className="canvas-host" ref={sectionEl} />
             <div className="legend">
-              <span className="sw cut" /> wall <span className="sw ref" /> nursery pot <span className="sw env" /> clearance
+              <span className="sw cut" /> wall {(model?.pieces?.length ?? 0) > 0 && <><span className="sw piece" /> pieces </>}<span className="sw ref" /> nursery pot <span className="sw env" /> clearance
             </div>
           </div>
           {!model && !busy && (
@@ -956,6 +972,17 @@ export function App() {
       )}
     </div>
   );
+}
+
+async function fetchSTL(url: string, what: string): Promise<ArrayBuffer> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Could not load ${what} (${res.status})`);
+  return res.arrayBuffer();
+}
+
+/** The model's separate pieces, in the mesh's raw coordinates. */
+function loadPieces(m: PotModel): Promise<{ name: string; positions: Float32Array }[]> {
+  return Promise.all((m.pieces ?? []).map(async (p) => ({ name: p.name, positions: parseSTL(await fetchSTL(api.pieceUrl(m.id, p.name), `the piece ${p.name}`)) })));
 }
 
 function concatParts(parts: ImportedPart[]): Float32Array {

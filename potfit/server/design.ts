@@ -6,7 +6,7 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { copyFile, cp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { copyFile, cp, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { DesignParam, DesignReport, DesignTarget, FitSettings, ParamValues, PotDesign, PotModel, ReferencePot } from '../shared/types.ts';
 import type { Store } from './store.ts';
@@ -21,6 +21,8 @@ export interface DesignImage {
 
 export interface BuildResult {
   stl: Buffer;
+  /** The separate pieces' STLs, by name. */
+  pieces: Record<string, Buffer>;
   report: DesignReport;
   paramSpec: Record<string, DesignParam>;
   params: ParamValues;
@@ -203,8 +205,12 @@ export class Designs {
           else reject(new BuildError(err.trim() || `The build exited with ${signal ?? `code ${code}`}`));
         });
       });
-      const result = JSON.parse(await readFile(join(out, 'result.json'), 'utf8')) as Omit<BuildResult, 'stl'>;
-      return { ...result, stl: await readFile(join(out, 'design.stl')) };
+      const result = JSON.parse(await readFile(join(out, 'result.json'), 'utf8')) as Omit<BuildResult, 'stl' | 'pieces'>;
+      const pieces: Record<string, Buffer> = {};
+      for (const file of await readdir(join(out, 'pieces')).catch(() => [] as string[])) {
+        if (file.endsWith('.stl')) pieces[file.slice(0, -4)] = await readFile(join(out, 'pieces', file));
+      }
+      return { ...result, stl: await readFile(join(out, 'design.stl')), pieces };
     } finally {
       await rm(out, { recursive: true, force: true }).catch(() => undefined);
     }
@@ -243,9 +249,9 @@ export class Designs {
         },
         built.stl,
         id,
-      ).then(async (m) => {
+      ).then(async () => {
         await this.markApplied(id);
-        return m;
+        return this.store.writePieces(id, built.pieces, { all: true });
       });
     } catch (e) {
       await rm(this.store.modelDir(id), { recursive: true, force: true }).catch(() => undefined);
@@ -291,6 +297,8 @@ export class Designs {
       await rename(`${mesh}.tmp`, mesh);
       await this.markApplied(modelId);
       await rm(join(this.dir(modelId), 'unapplied.mjs'), { force: true });
+      // The script makes the pieces: they're replaced with what it built (none, if it built none).
+      await this.store.writePieces(modelId, built.pieces, { all: true });
       return this.store.updateModel(modelId, {
         triangleCount: built.report.triangles,
         transform: built.report.placement,
@@ -319,6 +327,7 @@ export class Designs {
   async prepareWorkspace(model: PotModel, ref: ReferencePot): Promise<string> {
     const ws = this.dir(model.id);
     await mkdir(join(ws, 'out'), { recursive: true });
+    await mkdir(join(ws, 'renders'), { recursive: true });
     if (!existsSync(this.scriptPath(model.id))) await copyFile(join(dirname(this.toolPath), 'starter-design.mjs'), this.scriptPath(model.id));
     if (!existsSync(join(this.appliedDir(model.id), SCRIPT_FILE))) await this.markApplied(model.id);
     const state = {
@@ -326,6 +335,7 @@ export class Designs {
       avoidOverhangs: model.avoidOverhangs !== false,
       design: { script: SCRIPT_FILE, out: 'out' },
       mesh: 'out/design.stl',
+      pieces: 'out/pieces',
       name: model.name,
       description: model.design?.description ?? '',
       images: (model.design?.images ?? []).map((n) => `refs/${n}`),

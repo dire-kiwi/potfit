@@ -98,6 +98,27 @@ export interface PotModel {
   versionId?: string | null;
   /** When the user last switched versions (so the agent can be told). */
   versionSwitchedAt?: string | null;
+  /**
+   * Separate pieces printed on their own (eyes for a character, say), in the same raw coordinates
+   * as the pot's mesh and placed with it. Absent on models from before pieces.
+   */
+  pieces?: ModelPiece[];
+}
+
+/** A separate printed piece of a model, kept in models/<id>/pieces/<name>.stl. */
+export interface ModelPiece {
+  /** Lower-case letters, digits and dashes; also its file name. */
+  name: string;
+  triangleCount: number;
+}
+
+/** Piece names: lower-case letters, digits and dashes, starting with a letter or digit. */
+export const PIECE_NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
+
+export function pieceNameError(name: unknown): string | null {
+  if (typeof name !== 'string' || !PIECE_NAME.test(name)) return 'piece names are 1-40 lower-case letters, digits and dashes, like "eyes" or "left-ear"';
+  if (name === 'pot') return '"pot" is the pot itself; name the piece after what it is';
+  return null;
 }
 
 export type ModelPatch = Partial<Pick<PotModel, 'name' | 'transform' | 'fit' | 'avoidOverhangs'>>;
@@ -135,6 +156,20 @@ export interface OverhangSpot {
   side: string;
 }
 
+/** A separate piece a design script built (see PotModel.pieces). */
+export interface PieceReport {
+  name: string;
+  triangles: number;
+  /** Size in the design frame (z is height), mm. */
+  size: Vec3;
+  /** cm³ of material. */
+  volume: number;
+  /** Separate solids in the piece (a pair of eyes is two). */
+  components: number;
+  /** How much of it overlaps the pot, mm³; it should be 0, with a small gap where they meet. */
+  overlap: number;
+}
+
 /** What building a design script produced. */
 export interface DesignReport {
   triangles: number;
@@ -157,6 +192,8 @@ export interface DesignReport {
   notes: string[];
   warnings: string[];
   buildMs: number;
+  /** The separate pieces the script returned beside the pot (absent on older builds). */
+  pieces?: PieceReport[];
 }
 
 export interface PotDesign {
@@ -236,6 +273,11 @@ export type Confidence = 'high' | 'medium' | 'low';
 export interface MeshEdit {
   trianglesBefore: number;
   trianglesAfter: number;
+  /** Pieces the edit added or replaced, and removed (absent on older checkpoints). */
+  piecesSet?: string[];
+  piecesRemoved?: string[];
+  /** Set when the edit only changed pieces. */
+  potUnchanged?: boolean;
 }
 
 export interface ReviewFinding {
@@ -330,6 +372,8 @@ export interface ModelVersion {
   triangleCount: number;
   /** sha-256 of the mesh, the applied design script and each part. */
   mesh: string;
+  /** sha-256 of each separate piece, by name (absent on versions from before pieces: none). */
+  pieces?: Record<string, string>;
   /** A designed model's build: its script, parts and what it was built with. */
   design: { script: string; parts: Record<string, string>; state: Pick<PotDesign, 'params' | 'paramSpec' | 'report' | 'builtFor' | 'builtAt'> } | null;
 }

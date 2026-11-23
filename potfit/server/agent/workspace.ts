@@ -1,11 +1,13 @@
 // The directories threads work in, and the state.json pot-tool reads there.
 //
 //   models/<id>/agent/                 a fitting thread: mesh.stl (a link to the model's mesh), state.json,
-//                                      and whatever the agent writes (Blender scripts, meshes, renders/)
+//                                      and whatever the agent writes (Blender scripts, meshes, renders/);
+//                                      state.json points pot-tool at the model's pieces/ beside it
 //   models/<id>/design/                a design thread (see design.ts)
-//   models/<id>/reviews/<rid>/         a review thread: fitted.stl (the model as placed), state.json
+//   models/<id>/reviews/<rid>/         a review thread: fitted.stl (the model as placed), pieces/ (its
+//                                      separate pieces as placed), state.json
 
-import { copyFile, link, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { copyFile, link, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parseSTL, writeBinarySTL } from '../../shared/stl.ts';
 import { applyTransform, computeBounds, orientedBounds, type Bounds } from '../../shared/transform.ts';
@@ -30,6 +32,8 @@ export async function prepareFitWorkspace(store: Store, model: PotModel, ref: Re
   await rename(tmp, mesh);
   const state = {
     mesh: 'mesh.stl',
+    // The model's own pieces, which pot-tool places with the mesh; the agent changes them with apply_mesh_edit.
+    pieces: '../pieces',
     model: { name: model.name, sourceFile: model.sourceFile, triangles: model.triangleCount },
     reference: ref ? refState(ref) : null,
     fit: model.fit,
@@ -58,9 +62,17 @@ export async function prepareReviewWorkspace(store: Store, model: PotModel, ref:
   const rawBounds = computeBounds(raw);
   const fitted = applyTransform(raw, model.transform, rawBounds);
   await writeFile(join(ws, 'fitted.stl'), writeBinarySTL(fitted, `potfit fitted: ${model.name}`));
+  const piecesDir = join(ws, 'pieces');
+  await rm(piecesDir, { recursive: true, force: true });
+  const pieces = await store.readPieces(model.id);
+  if (pieces.length) await mkdir(piecesDir, { recursive: true });
+  for (const p of pieces) {
+    const placed = applyTransform(parseSTL(await readFile(store.pieceFile(model.id, p.name))), model.transform, rawBounds);
+    await writeFile(join(piecesDir, `${p.name}.stl`), writeBinarySTL(placed, `potfit fitted piece: ${p.name}`));
+  }
   const design: ReviewedDesign = { scale: model.transform.scale, originalSize: size(orientedBounds(rawBounds, model.transform.up)), fittedSize: size(computeBounds(fitted)) };
   const { referenceId: _ref, ...goals } = model.fit;
-  const state = { mesh: 'fitted.stl', placed: true, reference: refState(ref), fit: goals, design };
+  const state = { mesh: 'fitted.stl', pieces: 'pieces', placed: true, reference: refState(ref), fit: goals, design };
   await writeFile(join(ws, 'state.json'), JSON.stringify(state, null, 2) + '\n');
   return { ws, design, positions: raw };
 }

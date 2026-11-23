@@ -276,6 +276,8 @@ export class Agent {
       lines.push(`Design parameters now: ${JSON.stringify(model.design.params)}`);
       if (model.design.buildError) lines.push(`The last build failed: ${model.design.buildError}`);
     }
+    const pieces = model.pieces ?? [];
+    lines.push(pieces.length ? `Separate pieces, printed on their own: ${pieces.map((p) => `${p.name} (${p.triangleCount} triangles)`).join(', ')}` : 'Separate pieces: none (the pot is the only piece)');
     lines.push(overhangPreference(model.avoidOverhangs !== false));
     const images = attachments.filter((a) => a.kind === 'image');
     if (images.length) {

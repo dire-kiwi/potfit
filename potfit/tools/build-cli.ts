@@ -6,11 +6,11 @@
 //
 //   node tools/build-cli.ts --script design.mjs --input input.json --out dir
 //
-// input.json is a DesignInput. Writes dir/design.stl (design frame, +Z up) and
-// dir/result.json ({ report, paramSpec, params }); errors go to stderr with
-// exit code 1.
+// input.json is a DesignInput. Writes dir/design.stl (design frame, +Z up),
+// dir/pieces/<name>.stl for each separate piece, and dir/result.json
+// ({ report, paramSpec, params }); errors go to stderr with exit code 1.
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { writeBinarySTL } from '../shared/stl.ts';
@@ -26,6 +26,9 @@ try {
   const input = JSON.parse(readFileSync(resolve(values.input), 'utf8'));
   const out = await buildDesign(resolve(values.script), input);
   writeFileSync(join(values.out, 'design.stl'), writeBinarySTL(out.positions, 'potfit design'));
+  const names = Object.keys(out.pieces);
+  if (names.length) mkdirSync(join(values.out, 'pieces'));
+  for (const name of names) writeFileSync(join(values.out, 'pieces', `${name}.stl`), writeBinarySTL(out.pieces[name], `potfit design piece: ${name}`));
   writeFileSync(join(values.out, 'result.json'), JSON.stringify({ report: out.report, paramSpec: out.paramSpec, params: out.params }));
 } catch (e) {
   process.stderr.write(`${(e as Error).message ?? e}\n`);

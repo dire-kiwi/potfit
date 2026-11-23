@@ -2,7 +2,7 @@
 // pot-tool: measuring and fitting helpers, behind potfit's app tools (and for humans).
 // Run `node tools/pot-tool.ts help` for usage.
 
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { analyzeMesh, checkFit, placeDesign, solveFit, type ReferenceDims } from '../shared/fit.ts';
@@ -19,12 +19,14 @@ Commands
   analyze   Orientation candidates, cavity profile and dimensions of the mesh at scale 1
   solve     Deterministic fit: scale and place the pot around the reference pot
   check     Measure a transform against the reference pot (gaps, rim offset, floor)
-  render    Draw a side-on section of a transform as a PNG
-  place     Write the mesh as placed by a transform, in the pot frame, for editing (Blender)
+  render    Draw a side-on section of a transform as a PNG (separate pieces in blue)
+  place     Write the mesh (or a piece, or everything) as placed by a transform, in the pot
+            frame, for editing (Blender)
   unplace   Turn an edited placed mesh back into the raw coordinates of mesh.stl, and
             print the transform that puts it back where it was edited
   build     Design workspaces: run the design script and report on the result
-  preview   Design workspaces: shaded views of the last build, and its section
+  preview   Shaded views of the pot as placed, with its pieces (in blue); in design
+            workspaces, of the last build, and its section
 
 Inputs default to ./state.json, which holds the mesh path, reference pot, fit
 settings and the transform currently shown in the app. When state.json has
@@ -32,6 +34,10 @@ settings and the transform currently shown in the app. When state.json has
 check and render measure it as it is. In a design workspace ("frame":
 "design") the mesh is the last build, and check and render place it the way
 the app will: scale 1, the reference pot lowered into the cavity.
+
+The model's separate pieces (state.pieces, a directory of <name>.stl in the
+mesh's coordinates) are placed with the mesh. render and preview draw them;
+analyze, solve and check measure the pot alone. With --mesh, there are none.
 
 Options
   --state <file>         state file (default ./state.json)
@@ -48,6 +54,8 @@ Options
                          build: output directory (default state.design.out);
                          place: placed STL (default placed.stl); unplace: raw STL (default edited.stl)
   --in <file>            unplace: the edited placed STL
+  --piece <name>         place: write this piece instead of the pot
+  --all                  place: write the pot and every piece in one STL
   --z-up                 place/unplace: the placed STL is Z up (Blender's frame: x, -z, y of the
                          pot frame), with the reference pot's base centre at the origin
   --script <file>        build: design script (default state.design.script)
@@ -59,6 +67,8 @@ Options
 
 interface State {
   mesh?: string;
+  /** Directory of the separate pieces, <name>.stl in the mesh's coordinates. */
+  pieces?: string;
   /** The mesh is already placed in the pot frame (review workspaces). */
   placed?: boolean;
   /** The mesh is a design build: +Z up, the pot's axis on x = y = 0 (design workspaces). */
@@ -93,6 +103,8 @@ const { positionals, values } = parseArgs({
     params: { type: 'string' },
     view: { type: 'string' },
     in: { type: 'string' },
+    piece: { type: 'string' },
+    all: { type: 'boolean', default: false },
     'z-up': { type: 'boolean', default: false },
     json: { type: 'boolean', default: false },
     'json-out': { type: 'string' },
@@ -120,6 +132,33 @@ function loadMesh() {
     mesh = { positions, raw: computeBounds(positions) };
   }
   return mesh;
+}
+
+/** The model's separate pieces, by name (none when --mesh names another mesh). */
+function loadPieces(): { name: string; positions: Float32Array }[] {
+  if (values.mesh || !state.pieces) return [];
+  const dir = here(state.pieces);
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((f) => f.endsWith('.stl'))
+    .sort()
+    .map((f) => ({ name: f.slice(0, -4), positions: parseSTL(readFileSync(join(dir, f))) }));
+}
+
+function concat(parts: Float32Array[]): Float32Array {
+  const out = new Float32Array(parts.reduce((n, p) => n + p.length, 0));
+  let at = 0;
+  for (const p of parts) {
+    out.set(p, at);
+    at += p.length;
+  }
+  return out;
+}
+
+/** The pieces placed like the pot: by `t` with the pot's raw bounds, so they stay where they sit on it. */
+function placedPieces(t: PotTransform): Float32Array | null {
+  const pieces = loadPieces();
+  return pieces.length ? concat(pieces.map((p) => applyTransform(p.positions, t, loadMesh().raw))) : null;
 }
 
 const num = (v: string | undefined, name: string): number | undefined => {
@@ -223,6 +262,12 @@ async function runBuild(script: string, outDir: string, params: ParamValues) {
   mkdirSync(outDir, { recursive: true });
   const stl = join(outDir, 'design.stl');
   writeFileSync(stl, writeBinarySTL(result.positions, 'potfit design'));
+  const piecesDir = join(outDir, 'pieces');
+  rmSync(piecesDir, { recursive: true, force: true });
+  for (const [name, positions] of Object.entries(result.pieces)) {
+    mkdirSync(piecesDir, { recursive: true });
+    writeFileSync(join(piecesDir, `${name}.stl`), writeBinarySTL(positions, `potfit design piece: ${name}`));
+  }
   writeFileSync(join(outDir, 'report.json'), JSON.stringify({ report: result.report, paramSpec: result.paramSpec, params: result.params }, null, 2));
   return { result, stl };
 }
@@ -308,21 +353,32 @@ switch (command) {
     const angle = num(values.angle, 'angle') ?? 0;
     const file = resolve(values.out ?? 'section.png');
     const { positions, raw } = loadMesh();
-    const img = renderSection(applyTransform(positions, t, raw), state.reference ?? null, { angle, radialClear: fit.clearance / 2 });
+    const img = renderSection(applyTransform(positions, t, raw), state.reference ?? null, { angle, radialClear: fit.clearance / 2, pieces: placedPieces(t) });
     writeFileSync(file, img.png);
     const b = img.bounds;
     out(
       { file, ...img, png: undefined },
       [
         `wrote ${file} (${img.width}x${img.height} px, ${f2(img.pxPerMm)} px/mm, x ${f2(b.minX)}..${f2(b.maxX)}, y ${f2(b.minY)}..${f2(b.maxY)})`,
-        'grey fill: outer pot cut faces; red: reference pot; dashed orange: required clearance; dashed blue: reference axis; light grid: 10 mm.',
+        'grey fill: outer pot cut faces; blue fill: separate pieces; red: reference pot; dashed orange: required clearance; dashed blue: reference axis; light grid: 10 mm.',
       ].join('\n'),
     );
     break;
   }
   case 'place': {
     const t = transformArg();
-    const { positions, raw } = loadMesh();
+    const { positions: pot, raw } = loadMesh();
+    let positions = pot;
+    let what = 'the pot';
+    if (values.piece !== undefined) {
+      const piece = loadPieces().find((p) => p.name === values.piece);
+      if (!piece) fail(`there is no piece ${values.piece}${loadPieces().length ? ` (pieces: ${loadPieces().map((p) => p.name).join(', ')})` : '; the model has no pieces'}`);
+      positions = piece.positions;
+      what = `the piece ${piece.name}`;
+    } else if (values.all) {
+      positions = concat([pot, ...loadPieces().map((p) => p.positions)]);
+      what = 'the pot and its pieces';
+    }
     const placed = applyTransform(positions, t, raw);
     const file = resolve(values.out ?? 'placed.stl');
     writeFileSync(file, writeBinarySTL(values['z-up'] ? yUpToZUp(placed) : placed, 'potfit placed'));
@@ -332,9 +388,9 @@ switch (command) {
     out(
       { file, transform: t, zUp: values['z-up'], bounds: values['z-up'] ? computeBounds(yUpToZUp(placed)) : b },
       [
-        `wrote ${file}: ${positions.length / 9} triangles placed by ${formatTransform(t)}`,
+        `wrote ${file}: ${what}, ${positions.length / 9} triangles placed by ${formatTransform(t)}`,
         `frame: mm, ${up} up, the reference pot's base centre at the origin and its axis along +${up}${ref ? ` (it reaches ${up} = ${f2(ref.height)})` : ''}`,
-        `the outer pot spans ${up} ${f2(b.min.y)} .. ${f2(b.max.y)}`,
+        `${values.piece !== undefined ? 'it' : 'the outer pot'} spans ${up} ${f2(b.min.y)} .. ${f2(b.max.y)}`,
         `after editing, turn it back with: ./pot-tool unplace --in <edited.stl> --out edited.stl${values['z-up'] ? ' --z-up' : ''}${values.transform ? " --transform '<the same transform>'" : ''}`,
       ].join('\n'),
     );
@@ -383,6 +439,16 @@ switch (command) {
   }
   case 'preview': {
     const { positions, raw } = loadMesh();
+    // Draw the pot as placed (Z up, as printed) with its pieces; a design build and --mesh as they are.
+    let drawn = positions;
+    let pieceFrom: number | undefined;
+    if (!values.mesh) {
+      const t = state.frame === 'design' ? null : transformArg();
+      const pot = t ? yUpToZUp(applyTransform(positions, t, raw)) : positions;
+      const pieces = loadPieces().map((p) => (t ? yUpToZUp(applyTransform(p.positions, t, raw)) : p.positions));
+      drawn = concat([pot, ...pieces]);
+      if (pieces.length) pieceFrom = pot.length / 9;
+    }
     const file = resolve(values.out ?? (state.design ? here(join(state.design.out, 'preview.png')) : 'preview.png'));
     let views: ViewAngle[] | undefined;
     if (values.view) {
@@ -390,7 +456,7 @@ switch (command) {
       if (!Number.isFinite(azimuth) || !Number.isFinite(elevation)) fail('--view must be azimuth,elevation in degrees');
       views = [{ azimuth, elevation }];
     }
-    const img = renderViews(positions, views ? { views, tile: 900, columns: 1 } : {});
+    const img = renderViews(drawn, { ...(views ? { views, tile: 900, columns: 1 } : {}), pieceFrom });
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, img.png);
     const lines = [
@@ -399,12 +465,13 @@ switch (command) {
         ? `one view from azimuth ${views[0].azimuth}°, elevation ${views[0].elevation}° (azimuth 0 looks at the front from -y, -90 at the right side from +x)`
         : 'top left: front (from -y); top right: right side (from +x); bottom left: three-quarter from front right, above; bottom right: top down, front at the bottom.',
     ];
+    if (pieceFrom !== undefined) lines.push(`separate pieces in blue: ${loadPieces().map((p) => p.name).join(', ')}`);
     // The section is for design workspaces, whose mesh is the last build (not one passed with --mesh).
     if (!views && state.reference && state.frame === 'design' && !values.mesh) {
       const fit = fitSettings();
       const t = transformArg();
       const sectionFile = join(dirname(file), 'section.png');
-      writeFileSync(sectionFile, renderSection(applyTransform(positions, t, raw), state.reference, { radialClear: fit.clearance / 2 }).png);
+      writeFileSync(sectionFile, renderSection(applyTransform(positions, t, raw), state.reference, { radialClear: fit.clearance / 2, pieces: placedPieces(t) }).png);
       lines.push(`wrote ${sectionFile}: side-on section through the front and back with the nursery pot (red) and required clearance (dashed orange)`);
     }
     out({ file }, lines.join('\n'));

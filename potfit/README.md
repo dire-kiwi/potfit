@@ -153,8 +153,10 @@ conversation about the model is docked on the right.
    review of an earlier placement is marked out of date. The iterative
    screenshot review is here too (below).
 5. **Export**: the final checks (the nursery pot fits, wall and floor
-   thickness, one solid piece and overhangs for designs) and *Export STL*: the
-   placed model, Z up and standing on z = 0.
+   thickness, one solid and overhangs for designs) and *Export STL*: the
+   placed model, Z up and standing on z = 0. A model with separate pieces
+   (below) lists them here, each with its own STL and a box to show or hide it
+   in the views, and *Export all* downloads the pot and every piece.
 
 **The Claude panel.** Type feedback and send it; Claude gets your message,
 fresh screenshots of both views (untick *Views* not to send them), any
@@ -186,6 +188,15 @@ first, they're kept as a version anyway, so nothing is lost. Double-click a
 version (or ✎) to rename it. *Revert* on a change's card goes to the version
 before it, and *Go to vN* goes back to the version the change made. Claude is
 told when you've gone back to a version, and works from it.
+
+**Separate pieces**: a model can have pieces that print on their own beside
+the pot, like eyes that fit into sockets, a lid or a hat. Ask Claude for one
+("hollow out the eye sockets and make the eyes a separate piece") and it cuts
+the socket out of the pot and models the piece to fit, with a small gap so it
+fits once printed: in Blender for an imported pot, in the design script for a
+designed one. Pieces show in blue in both views, move and scale with the pot,
+and are kept in each version. Each exports scaled like the pot, Z up, centred
+and standing on z = 0; lay it the way it prints best in your slicer.
 
 **Comments**: select text in a change's card or a review's verdict and click
 *Comment*. The comment box opens in the same popup. Clicking away saves it and
@@ -328,10 +339,10 @@ server stays responsive:
 | `check_fit` | all | Gaps by height, rim offset, floor gap, interference, wall and floor thickness and size for a placement |
 | `render_views` | all | Sections at given angles and shaded views as PNGs in `renders/`, which Claude looks at with its Read tool and the panel shows as thumbnails |
 | `apply_fit` | fit | Makes a placement (and the goals it meets) the model's, with a summary; the server measures it again |
-| `export_placed_mesh` | fit | The pot as placed, Z up, for Blender |
-| `apply_mesh_edit` | fit | Takes the mesh edited in Blender back to the model's raw coordinates and makes it the model's mesh |
+| `export_placed_mesh` | fit | The pot as placed, Z up, for Blender, and each separate piece beside it (`placed-<name>.stl`) |
+| `apply_mesh_edit` | fit | Takes the mesh edited in Blender back to the model's raw coordinates and makes it the model's mesh; also adds, replaces or removes separate pieces (`pieces`, `removePieces`), with the pot or on their own |
 | `run_blender` | fit, design | Runs a Python script headless in Blender, with `tools/blender/potfit_bpy.py` importable (helpers for loading, saving, booleans, `fill_cavity` and checking for a closed solid). Only when Blender is installed |
-| `build_design` | design | Builds `design.mjs` and reports size, material, pieces, overhangs and the fit |
+| `build_design` | design | Builds `design.mjs` and reports size, material, solids, overhangs, separate pieces (and any overlap with the pot) and the fit |
 | `apply_design` | design | Builds it on the server and makes it the model's mesh; one that doesn't build is refused with the error, so Claude fixes it in the same turn |
 | `submit_review` | review | The verdict, findings and suggestion |
 
@@ -344,8 +355,8 @@ work on it.
 
 **Versions** (`server/versions.ts`). Each version is a `models/<id>/versions/<id>.json`
 with its parent, the placement, goals and triangle count, and the sha-256 of
-the mesh (and, for a design, of the applied script and each part, with the
-parameters and build report). The files themselves are kept once each in
+the mesh and each separate piece (and, for a design, of the applied script and
+each part, with the parameters and build report). The files themselves are kept once each in
 `versions/blobs/`, so versions that only move the pot share a mesh. The model
 records the version it's at. Before an applying tool changes the model, the
 user's edits since that version (if any) become a version; after it, the
@@ -356,12 +367,19 @@ Revert on a card goes to the parent of the version the change made. Models
 from before versions get their first version when they're next opened. A mesh edit is stored unscaled, so if the fit is rescaled later the
 edit scales with it.
 
+**Separate pieces** are kept in `models/<id>/pieces/<name>.stl`, in the same
+raw coordinates as `mesh.stl`, so the model's placement puts them where they
+sit on the pot. When an edit changes the pot's bounding box (and so the
+placement's anchor), the new placement maps the raw coordinates exactly as the
+old one did, so the pieces stay put. pot-tool's sections and shaded views draw
+them in blue; its measurements are of the pot alone.
+
 **Workspaces.** A fitter works in `models/<id>/agent/`: `mesh.stl` (the
 model's mesh, linked in afresh before each tool call), `state.json` (what
-pot-tool reads) and whatever Claude writes there (Blender scripts, meshes,
-renders). A designer works in `models/<id>/design/` (below). A reviewer works
+pot-tool reads; it points at the model's `pieces/`) and whatever Claude writes
+there (Blender scripts, meshes, renders). A designer works in `models/<id>/design/` (below). A reviewer works
 in `models/<id>/reviews/<id>/`, which holds only `fitted.stl` (the model as
-placed), `state.json` with `"placed": true` and its renders, next to the
+placed), `pieces/` (its separate pieces, placed likewise), `state.json` with `"placed": true` and its renders, next to the
 review's record.
 
 To change an imported pot's shape, Claude exports the placed pot Z up, edits it
@@ -389,12 +407,16 @@ always give watertight meshes. It gets a toolkit (`tools/potlib.ts`):
   Blender, so a parameter can move, scale or switch a part but not reshape it.
 - `params`: the settings the Design panel shows.
 
+A script returns the pot as a Manifold, or `{ pot, pieces: { eyes, lid } }`
+to add separate pieces, each modelled where it sits on the pot.
+
 The design frame is millimetres, +Z up, the base on z = 0 and the nursery
 pot's axis on x = y = 0, with the front facing -Y. The server places the built
 mesh at scale 1 with the nursery pot lowered into the cavity until it rests.
 
 A designer works in `data/models/<id>/design/`, which holds `design.mjs`,
-`refs/` (your pictures), `parts/` (STL parts, if any), `out/` and `renders/`.
+`refs/` (your pictures), `parts/` (STL parts, if any), `out/` (the last build,
+with its pieces in `out/pieces/`) and `renders/`.
 Claude edits `design.mjs` with its Write and Edit tools, builds and renders it
 with `build_design` and `render_views` (which rebuild first if the script has
 changed since the last build), and applies it with `apply_design`. Edits it
