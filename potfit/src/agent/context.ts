@@ -65,8 +65,12 @@ export async function imageAttachment(name: string, dataUrl: string, max = 1280)
 /** Files the composer takes as meshes for reference. */
 export const isMeshFile = (f: File) => ACCEPTED_EXTENSIONS.includes(f.name.slice(f.name.lastIndexOf('.')).toLowerCase());
 
-/** The largest mesh a message takes (the API's request limit is 64 MB, and base64 adds a third). */
-const MAX_MESH_BYTES = 40 * 1024 * 1024;
+/**
+ * The most mesh one message takes, all its meshes together, as STL. A message goes in one request,
+ * which the API caps at 64 MB; base64 adds a third (48 MB here), and the rest is room for the
+ * pictures and the views' screenshots.
+ */
+export const MAX_MESH_BYTES = 36 * 1024 * 1024;
 
 export interface PickedMesh {
   /** The file the user picked. */
@@ -74,6 +78,8 @@ export interface PickedMesh {
   triangles: number;
   /** A binary STL of all its objects, as base64. */
   data: string;
+  /** The STL's size in bytes. */
+  bytes: number;
 }
 
 /** Any mesh file the app imports, as one binary STL for an attachment. */
@@ -87,15 +93,17 @@ export async function readMesh(file: File): Promise<PickedMesh> {
   }
   if (!positions.length) throw new Error(`${file.name} has no triangles`);
   const stl = writeBinarySTL(positions, `potfit reference: ${file.name}`);
-  if (stl.byteLength > MAX_MESH_BYTES) throw new Error(`${file.name} is too big to attach (${Math.round(stl.byteLength / 1048576)} MB as an STL; at most 40 MB)`);
+  if (stl.byteLength > MAX_MESH_BYTES) throw new Error(`it's ${megabytes(stl.byteLength)} as an STL, and a message takes at most ${megabytes(MAX_MESH_BYTES)}`);
   const url = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result as string);
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(new Blob([stl as Uint8Array<ArrayBuffer>]));
   });
-  return { name: file.name, triangles: positions.length / 9, data: url.slice(url.indexOf(',') + 1) };
+  return { name: file.name, triangles: positions.length / 9, data: url.slice(url.indexOf(',') + 1), bytes: stl.byteLength };
 }
+
+export const megabytes = (n: number) => `${Math.ceil(n / 1048576)} MB`;
 
 /** A mesh as an attachment: potfit's server saves it in the agent's refs/ and only tells Claude it's there. */
 export const meshAttachment = (m: PickedMesh) => ({ kind: 'file' as const, name: m.name, media_type: 'model/stl', data: m.data });

@@ -9,7 +9,7 @@ import type { AgentSettings } from '../../shared/types.ts';
 import { ImagePicker, imageFiles, readImage, type PickedImage } from '../components/ImagePicker.tsx';
 import { ACCEPTED_EXTENSIONS } from '../viewer/importers.ts';
 import { AgentSettingsControls } from './AgentSettings.tsx';
-import { imageAttachment, isMeshFile, meshAttachment, readMesh, usePotAgent, type PickedMesh } from './context.ts';
+import { MAX_MESH_BYTES, imageAttachment, isMeshFile, megabytes, meshAttachment, readMesh, usePotAgent, type PickedMesh } from './context.ts';
 
 const QUICK_FIT = ['Sit it a bit lower.', 'Leave 2 mm under it for drainage.', 'Make it a snugger fit.', 'Fill the space under the nursery pot.'];
 const QUICK_DESIGN = ['Make it taller.', 'Simplify the details.', 'Thicker walls.', 'Make it print without supports.'];
@@ -31,6 +31,8 @@ export function PotComposer({ role, mine }: {
   // Meshes go to the server only: it saves them for the agent and tells Claude where they are.
   const [meshes, setMeshes] = useState<PickedMesh[]>([]);
   const [reading, setReading] = useState(0);
+  const meshesRef = useRef(meshes);
+  meshesRef.current = meshes;
   const [withViews, setWithViews] = useState(role !== 'review');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -101,7 +103,13 @@ export function PotComposer({ role, mine }: {
       for (const f of meshFiles) {
         try {
           const mesh = await readMesh(f);
-          setMeshes((m) => [...m, mesh].slice(0, 4));
+          // The message's meshes go in one request, so they share one budget.
+          const now = meshesRef.current;
+          const total = now.reduce((n, x) => n + x.bytes, mesh.bytes);
+          if (now.length >= 4) throw new Error('at most 4 meshes in a message');
+          if (total > MAX_MESH_BYTES) throw new Error(`the meshes are too big together (${megabytes(total)} as STLs; at most ${megabytes(MAX_MESH_BYTES)} in a message)`);
+          meshesRef.current = [...now, mesh];
+          setMeshes(meshesRef.current);
         } catch (e) {
           setError(`Can't attach ${f.name}: ${(e as Error).message}`);
         }
