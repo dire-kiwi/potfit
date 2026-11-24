@@ -203,6 +203,7 @@ test('the policy keeps file tools to the workspace and turns the shell off', asy
   assert.equal(ask('fit', 'Write', 'edit', { file_path: 'edit.py' }), 'allow');
   assert.notEqual(ask('fit', 'Write', 'edit', { file_path: 'mesh.stl' }), 'allow');
   assert.notEqual(ask('design', 'Write', 'edit', { file_path: 'refs/ref-1.jpg' }), 'allow');
+  assert.notEqual(ask('fit', 'Write', 'edit', { file_path: 'refs/eye.stl' }), 'allow', "an attached mesh");
   assert.notEqual(ask('design', 'Write', 'edit', { file_path: '.applied/design.mjs' }), 'allow');
   assert.notEqual(ask('fit', 'Glob', 'search', { pattern: '/etc/**' }), 'allow');
   assert.notEqual(ask('fit', 'Glob', 'search', { pattern: '../**/*.stl' }), 'allow');

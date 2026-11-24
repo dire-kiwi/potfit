@@ -2,7 +2,9 @@
 // with only the tool call) need from the app.
 
 import { createContext, useContext } from 'react';
+import { ACCEPTED_EXTENSIONS, importFile } from '../viewer/importers.ts';
 import type { RunComment } from '../../shared/comments.ts';
+import { writeBinarySTL } from '../../shared/stl.ts';
 import type { AgentSettings, Checkpoint, ModelVersion, PotModel, Review, ServerStatus } from '../../shared/types.ts';
 
 export interface PotAgent {
@@ -59,6 +61,44 @@ export async function imageAttachment(name: string, dataUrl: string, max = 1280)
   const jpeg = canvas.toDataURL('image/jpeg', 0.85);
   return { kind: 'image' as const, name, media_type: 'image/jpeg', data: jpeg.slice(jpeg.indexOf(',') + 1) };
 }
+
+/** Files the composer takes as meshes for reference. */
+export const isMeshFile = (f: File) => ACCEPTED_EXTENSIONS.includes(f.name.slice(f.name.lastIndexOf('.')).toLowerCase());
+
+/** The largest mesh a message takes (the API's request limit is 64 MB, and base64 adds a third). */
+const MAX_MESH_BYTES = 40 * 1024 * 1024;
+
+export interface PickedMesh {
+  /** The file the user picked. */
+  name: string;
+  triangles: number;
+  /** A binary STL of all its objects, as base64. */
+  data: string;
+}
+
+/** Any mesh file the app imports, as one binary STL for an attachment. */
+export async function readMesh(file: File): Promise<PickedMesh> {
+  const parts = await importFile(file);
+  const positions = new Float32Array(parts.reduce((n, p) => n + p.positions.length, 0));
+  let at = 0;
+  for (const p of parts) {
+    positions.set(p.positions, at);
+    at += p.positions.length;
+  }
+  if (!positions.length) throw new Error(`${file.name} has no triangles`);
+  const stl = writeBinarySTL(positions, `potfit reference: ${file.name}`);
+  if (stl.byteLength > MAX_MESH_BYTES) throw new Error(`${file.name} is too big to attach (${Math.round(stl.byteLength / 1048576)} MB as an STL; at most 40 MB)`);
+  const url = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(new Blob([stl as Uint8Array<ArrayBuffer>]));
+  });
+  return { name: file.name, triangles: positions.length / 9, data: url.slice(url.indexOf(',') + 1) };
+}
+
+/** A mesh as an attachment: potfit's server saves it in the agent's refs/ and only tells Claude it's there. */
+export const meshAttachment = (m: PickedMesh) => ({ kind: 'file' as const, name: m.name, media_type: 'model/stl', data: m.data });
 
 const CONTEXT = /\n*<potfit-context>([\s\S]*?)<\/potfit-context>\s*$/;
 /** A message's own text, and the context potfit added to it. */

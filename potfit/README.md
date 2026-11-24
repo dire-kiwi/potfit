@@ -161,7 +161,12 @@ conversation about the model is docked on the right.
 **The Claude panel.** Type feedback and send it; Claude gets your message,
 fresh screenshots of both views (untick *Views* not to send them), any
 pictures you attach (pick, drop or paste them) and a note of the model as it
-is now: your manual moves, the goals and the overhang preference. Ask for
+is now: your manual moves, the goals and the overhang preference. *＋ Attach*
+(or a drop) also takes meshes for reference (STL, 3MF, OBJ, GLB/glTF, PLY), a
+part to copy or a size to match, say. They aren't sent to Claude: the server
+saves each as an STL in the thread's `refs/` and tells Claude where it is,
+with its triangle count and size, and Claude opens it in Blender if it needs
+its shape. Ask for
 different goals ("leave 2 mm for drainage") and Claude changes them with the
 fit. Ask for a change to the shape itself ("fill the empty space under the
 nursery pot", "close the drainage hole") and, with Blender installed, Claude
@@ -376,7 +381,8 @@ them in blue; its measurements are of the pot alone.
 
 **Workspaces.** A fitter works in `models/<id>/agent/`: `mesh.stl` (the
 model's mesh, linked in afresh before each tool call), `state.json` (what
-pot-tool reads; it points at the model's `pieces/`) and whatever Claude writes
+pot-tool reads; it points at the model's `pieces/`), `refs/` (meshes you
+attached, which Claude can't change) and whatever Claude writes
 there (Blender scripts, meshes, renders). A designer works in `models/<id>/design/` (below). A reviewer works
 in `models/<id>/reviews/<id>/`, which holds only `fitted.stl` (the model as
 placed), `pieces/` (its separate pieces, placed likewise), `state.json` with `"placed": true` and its renders, next to the
@@ -415,7 +421,7 @@ pot's axis on x = y = 0, with the front facing -Y. The server places the built
 mesh at scale 1 with the nursery pot lowered into the cavity until it rests.
 
 A designer works in `data/models/<id>/design/`, which holds `design.mjs`,
-`refs/` (your pictures), `parts/` (STL parts, if any), `out/` (the last build,
+`refs/` (your pictures and the meshes you attached), `parts/` (STL parts, if any), `out/` (the last build,
 with its pieces in `out/pieces/`) and `renders/`.
 Claude edits `design.mjs` with its Write and Edit tools, builds and renders it
 with `build_design` and `render_views` (which rebuild first if the script has

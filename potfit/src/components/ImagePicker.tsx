@@ -29,7 +29,7 @@ export async function readImage(file: Blob, name: string): Promise<PickedImage> 
 }
 
 /** Images from a drop or paste, ignoring anything that isn't an image. */
-export function imageFiles(list: FileList | DataTransferItemList | null | undefined): File[] {
+export function imageFiles(list: FileList | DataTransferItemList | File[] | null | undefined): File[] {
   if (!list) return [];
   const out: File[] = [];
   for (const item of Array.from(list as ArrayLike<File | DataTransferItem>)) {
