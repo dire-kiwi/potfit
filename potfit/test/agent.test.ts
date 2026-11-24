@@ -109,6 +109,26 @@ test('a fitting thread gets potfit context, calls app tools and is held to the p
   assert.equal(agent.isBusy(await store.getModel(model.id)), false);
 });
 
+test('attached meshes are saved in the workspace and described, not sent to Claude', async (t) => {
+  const { store, agent, model, events } = await setup(t);
+  const thread = await agent.mainThread(model.id);
+  // A 10 × 20 × 30 box's corner triangle, as the composer sends it.
+  const stl = Buffer.from(writeBinarySTL(new Float32Array([0, 0, 0, 10, 0, 0, 0, 20, 30]))).toString('base64');
+  const mesh = (name: string) => ({ kind: 'file' as const, name, media_type: 'model/stl', data: stl });
+  await agent.handle({ type: 'send', thread_id: thread.id, text: 'reply ok', attachments: [mesh('Eye socket.3mf'), mesh('Eye socket.stl')] });
+  const ws = join(store.modelDir(model.id), 'agent');
+  assert.deepEqual(readFileSync(join(ws, 'refs', 'Eye_socket.stl')), Buffer.from(stl, 'base64'));
+  assert.ok(existsSync(join(ws, 'refs', 'Eye_socket-2.stl')), 'a second mesh of the same name');
+
+  const sent = events.find((e) => e.type === 'item.added' && e.item.type === 'user_message');
+  const item = sent && sent.type === 'item.added' && sent.item.type === 'user_message' ? sent.item : null;
+  assert.match(item?.text ?? '', /Attached meshes, for reference: refs\/Eye_socket\.stl \(from Eye socket\.3mf\): 1 triangle, 10 × 20 × 30 [^;]*; refs\/Eye_socket-2\.stl: 1 triangle,/);
+  assert.deepEqual(item?.attachments, [{ kind: 'file', name: 'Eye socket.3mf', media_type: 'model/stl' }, { kind: 'file', name: 'Eye socket.stl', media_type: 'model/stl' }], 'the message keeps only their names');
+  assert.ok(!existsSync(join(ws, 'attachments')));
+
+  await assert.rejects(agent.handle({ type: 'send', thread_id: thread.id, text: 'hi', attachments: [{ ...mesh('bad.stl'), data: Buffer.from('nope').toString('base64') }] }), /Can't read the mesh bad\.stl/);
+});
+
 test('commands from the browser are checked', async (t) => {
   const { agent, model } = await setup(t);
   const thread = await agent.mainThread(model.id);

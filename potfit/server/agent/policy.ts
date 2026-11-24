@@ -72,7 +72,7 @@ export function potfitPolicy(opts: PolicyOptions) {
         if (!inside(target, cwd)) return { deny: `Only files in your working directory (${cwd}) can be changed.` };
         const rel = relative(realish(cwd), realish(target));
         if (role === 'fit' && rel === 'mesh.stl') return { deny: "mesh.stl is the model's mesh; change it with apply_mesh_edit." };
-        if (role === 'design' && (rel === 'refs' || rel.startsWith(`refs${sep}`))) return { deny: "refs/ holds the user's reference images; leave them as they are." };
+        if (rel === 'refs' || rel.startsWith(`refs${sep}`)) return { deny: "refs/ holds the user's reference images and meshes; leave them as they are." };
         if (role === 'design' && (rel === '.applied' || rel.startsWith(`.applied${sep}`))) return { deny: '.applied/ is the design as the user last saw it; apply_design keeps it.' };
         return 'allow';
       }

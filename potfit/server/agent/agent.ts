@@ -14,7 +14,7 @@ import { potfitPolicy } from './policy.ts';
 import { designSystemPrompt, fitSystemPrompt, overhangPreference, reviewSystemPrompt } from './prompts.ts';
 import { BadRequest, parseAgentSettings } from './settings.ts';
 import { toolsFor, type ToolDeps } from './tools.ts';
-import { describeFit, describeReference, fitWorkspace, prepareFitWorkspace } from './workspace.ts';
+import { describeFit, describeMeshes, describeReference, fitWorkspace, prepareFitWorkspace, saveAttachedMeshes, type AttachedMesh } from './workspace.ts';
 import { dirname, join } from 'node:path';
 import { transformsEqual } from '../../shared/transform.ts';
 
@@ -223,10 +223,16 @@ export class Agent {
     return t;
   }
 
-  /** What the user (or the screenshot loop) sends a fitting or design thread, with potfit's context. */
-  private async prepareSend(thread: Thread, text: string, attachments: Attachment[] = []): Promise<string> {
+  /**
+   * What the user (or the screenshot loop) sends a thread: the text with potfit's context, and the
+   * attachments for Claude. Attached meshes are saved in the thread's refs/ and only described.
+   */
+  private async prepareSend(thread: Thread, text: string, all: Attachment[] = []): Promise<{ text: string; attachments: Attachment[] }> {
     const m = metaOf(thread);
-    if (!m || m.role === 'review') return text;
+    const { attachments, meshes } = thread.cwd ? await saveAttachedMeshes(thread.cwd, all) : { attachments: all, meshes: [] };
+    if (!m || m.role === 'review') {
+      return { text: meshes.length ? `${text}\n\n${describeMeshes(meshes, false, 'review')}` : text, attachments };
+    }
     const { store, designs } = this.opts;
     let model = await store.getModel(m.modelId);
     const ref = model.fit.referenceId ? await store.getReference(model.fit.referenceId) : null;
@@ -247,10 +253,10 @@ export class Agent {
     } else {
       await prepareFitWorkspace(store, model, ref);
     }
-    return `${text}\n\n${await this.context(model, ref, thread.id, attachments, saved)}`;
+    return { text: `${text}\n\n${await this.context(model, ref, thread.id, attachments, saved, meshes)}`, attachments };
   }
 
-  private async context(model: PotModel, ref: ReferencePot | null, threadId: string, attachments: Attachment[], saved: string[]): Promise<string> {
+  private async context(model: PotModel, ref: ReferencePot | null, threadId: string, attachments: Attachment[], saved: string[], meshes: AttachedMesh[]): Promise<string> {
     const lines = [
       model.design ? `Model: ${model.name} (designed in potfit, ${model.triangleCount} triangles)` : `Model: ${model.name} (imported from ${model.sourceFile}, ${model.triangleCount} triangles)`,
       `Nursery pot: ${ref ? describeReference(ref) : 'none chosen yet'}`,
@@ -288,6 +294,7 @@ export class Agent {
           .join('; ')}`,
       );
     }
+    if (meshes.length) lines.push(describeMeshes(meshes, (await this.opts.blender.status).available, model.design ? 'design' : 'fit'));
     return `<potfit-context>\n${lines.join('\n')}\n</potfit-context>`;
   }
 
@@ -305,8 +312,8 @@ export class Agent {
         const locked = this.opts.lockedBy?.(m.modelId);
         if (locked) throw new Conflict(locked);
       }
-      const text = await this.prepareSend(thread, command.text, command.attachments ?? []);
-      return this.sdk.send(thread.id, text, { attachments: command.attachments, client_id: command.client_id });
+      const { text, attachments } = await this.prepareSend(thread, command.text, command.attachments ?? []);
+      return this.sdk.send(thread.id, text, { attachments, client_id: command.client_id });
     }
     return this.sdk.handle(command);
   }
@@ -323,7 +330,8 @@ export class Agent {
     const abort = () => void this.sdk.interrupt(threadId).catch(() => undefined);
     signal?.addEventListener('abort', abort, { once: true });
     try {
-      await this.sdk.send(threadId, await this.prepareSend(thread, text, attachments), { attachments });
+      const prepared = await this.prepareSend(thread, text, attachments);
+      await this.sdk.send(threadId, prepared.text, { attachments: prepared.attachments });
       return await done;
     } finally {
       signal?.removeEventListener('abort', abort);

@@ -22,6 +22,9 @@ conversation beside them.
   changed by hand since your last turn, and the images attached (screenshots
   of the app's views, and the user's own pictures). It is the truth; call
   get_state for more detail.
+- The user can attach meshes (STL, 3MF and so on) for reference: a part to
+  copy, a size to match. They aren't in the conversation; the app saves them
+  as STLs in \`refs/\` and the context names each one with its size.
 - Each change you apply makes a new version of the model. The user can go
   back to an earlier version and carry on from it, in a new branch; the
   context then says so, and the model is as it was in that version.
@@ -161,6 +164,8 @@ user can move and scale the pot by hand and send you feedback.
 
 - \`mesh.stl\`: the outer pot in raw imported coordinates (assume mm). Never
   modify it; edits go through apply_mesh_edit.
+- \`refs/\`, if there: meshes the user attached for reference. Leave them as
+  they are.
 - Anything you write: Blender scripts, exported and edited meshes, renders.
 
 ${COORDINATES}
@@ -255,6 +260,7 @@ a mesh. The user can change the parameters you expose and send you feedback.
 
 - \`design.mjs\`: the design script. Edit it in place (Write / Edit tools); it is the design.
 - \`refs/\`: the user's reference images. Look at every one of them (Read).
+  Meshes they attached for reference are kept here too, as STLs.
 - \`parts/\`: STL parts for \`lib.part\`, made with Blender (see Parts from
   Blender). Create it when you need it.
 - \`out/\`: what build_design and render_views write.

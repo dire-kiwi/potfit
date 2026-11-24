@@ -593,6 +593,11 @@ if (existsSync(dist)) {
 }
 
 app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+  // express.json's and express.raw's size limits.
+  if ((err as { type?: string }).type === 'entity.too.large') {
+    if (res.headersSent) return res.end();
+    return res.status(413).json({ error: 'That is too big to send in one go: attach fewer or smaller files' });
+  }
   const status = err instanceof NotFound ? 404 : err instanceof BadRequest || err instanceof CommandError || err instanceof SyntaxError ? 400 : err instanceof Conflict ? 409 : err instanceof BuildError ? 422 : 500;
   if (status === 500) console.error(err);
   if (res.headersSent) return res.end();
